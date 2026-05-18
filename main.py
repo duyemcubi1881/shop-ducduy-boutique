@@ -15,12 +15,22 @@ import logging
 
 load_dotenv()
 
-TOKEN        = os.getenv("DISCORD_TOKEN")
-BANK_NUMBER  = os.getenv("BANK_NUMBER")       # Số tài khoản ngân hàng
-BANK_NAME    = os.getenv("BANK_NAME")         # Tên ngân hàng viết tắt, VD: "vietcombank"
-SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")   # Token webhook từ SePay (tuỳ chọn)
-API_BASE     = os.getenv("API_BASE", "https://aovduy.onrender.com")
-WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8080"))
+TOKEN = os.getenv("DISCORD_TOKEN", "").strip()
+
+BANK_NUMBER = os.getenv("BANK_NUMBER", "").strip()
+
+BANK_NAME = os.getenv("BANK_NAME", "").strip()
+
+SEPAY_TOKEN = os.getenv("SEPAY_TOKEN", "").strip()
+
+API_BASE = os.getenv(
+    "API_BASE",
+    "https://aovduy.onrender.com"
+).strip()
+
+WEBHOOK_PORT = int(
+    os.environ.get("PORT", 10000)
+)
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
