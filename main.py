@@ -15,12 +15,13 @@ import logging
 load_dotenv()
 
 TOKEN        = os.getenv("DISCORD_TOKEN")
-BANK_NUMBER  = os.getenv("BANK_NUMBER")       
-BANK_NAME    = os.getenv("BANK_NAME")         
-SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")   
+BANK_NUMBER  = os.getenv("BANK_NUMBER")       # Số tài khoản ngân hàng
+BANK_NAME    = os.getenv("BANK_NAME")         # Tên ngân hàng viết tắt, VD: "vietcombank"
+SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")   # Token webhook từ SePay (tuỳ chọn)
 API_BASE     = os.getenv("API_BASE", "https://aovduy.onrender.com")
 
-# Render cấp cổng qua biến PORT, nếu không có sẽ dùng WEBHOOK_PORT hoặc mặc định 10000
+# QUAN TRỌNG: Render tự động cấp cổng thông qua biến hệ thống 'PORT'. 
+# Nếu không có (chạy ở máy cục bộ), code sẽ tự động dùng 'WEBHOOK_PORT' hoặc mặc định '10000'.
 WEBHOOK_PORT = int(os.getenv("PORT", os.getenv("WEBHOOK_PORT", "10000")))
 
 logging.basicConfig(level=logging.INFO)
@@ -32,9 +33,11 @@ log = logging.getLogger("bot")
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# Data lưu tạm trong bộ nhớ
-balances: dict[int, int] = {}   
-orders:   dict[str, dict] = {}  
+# =========================
+# DATA (in-memory)
+# =========================
+balances: dict[int, int] = {}   # {user_id: số_dư_VND}
+orders:   dict[str, dict] = {}  # {order_id: {...}}
 
 # =========================
 # DANH MỤC SẢN PHẨM
@@ -64,6 +67,7 @@ PRODUCTS = {
     },
 }
 
+# Tra cứu nhanh package theo id
 PACKAGE_LOOKUP: dict[str, dict] = {}
 for _prod_key, _prod in PRODUCTS.items():
     for _pkg in _prod["packages"]:
@@ -86,9 +90,10 @@ def deduct_balance(user_id: int, amount: int) -> bool:
     return True
 
 def build_qr_url(amount: int, order_id: str) -> str:
+    bank_n = BANK_NAME.upper() if BANK_NAME else "UNKNOWN"
     return (
         f"https://img.vietqr.io/image/"
-        f"{BANK_NAME}-{BANK_NUMBER}-compact2.png"
+        f"{bank_n}-{BANK_NUMBER}-compact2.png"
         f"?amount={amount}"
         f"&addInfo={order_id}"
         f"&accountName=SHOP%20KEY"
@@ -163,7 +168,7 @@ async def poll_transactions():
         log.debug(f"poll_transactions lỗi: {e}")
 
 # =========================
-# WEBHOOK SERVER
+# WEBHOOK SERVER (MÁY CHỦ LIÊN KẾT)
 # =========================
 async def handle_webhook(request: web.Request) -> web.Response:
     try:
@@ -218,9 +223,10 @@ class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
         qr_url = build_qr_url(amount, order_id)
 
         embed = discord.Embed(title="💳 Thông tin chuyển khoản", color=0x00BFFF)
+        bank_display = BANK_NAME.upper() if BANK_NAME else "CHƯA THIẾT LẬP"
         embed.description = (
             f"💰 Số tiền: **{amount:,} VNĐ**\n"
-            f"🏦 Ngân hàng: **{BANK_NAME.upper() if BANK_NAME else 'CHƯA CẤU HÌNH'}**\n"
+            f"🏦 Ngân hàng: **{bank_display}**\n"
             f"🔢 Số tài khoản: `{BANK_NUMBER}`\n"
             f"📝 Nội dung CK: **`{order_id}`** *(bắt buộc)*\n\n"
             f"📱 Quét mã QR bên dưới hoặc chuyển khoản thủ công.\n"
@@ -306,11 +312,15 @@ class BuyQuantityModal(discord.ui.Modal):
                     f"⏱ Thời gian sử dụng: **{pkg['duration']}**\n\n"
                     f"**Key:**\n{key_list}\n\n"
                     f"📁 File & hướng dẫn sử dụng trong server\n"
-                    f"🙏 Cảm ơn bạn đã sử dụng dịch vụ"
+                    f"🙏 Cảm ơn bạn đã sử dụng dịch vụ\n"
+                    f"🌐 {API_BASE}"
                 )
+                dm_embed.set_footer(text="Không chia sẻ key với người khác!")
                 await user.send(embed=dm_embed)
             except discord.Forbidden:
                 await interaction.followup.send("⚠️ Không thể DM cho bạn. Vui lòng mở DM để nhận key.", ephemeral=True)
+            except Exception as e:
+                log.error(f"Lỗi gửi DM key: {e}")
 
 class PackageSelectView(discord.ui.View):
     def __init__(self, product_key: str):
@@ -365,18 +375,26 @@ class ShopView(discord.ui.View):
     @discord.ui.button(label="💰 Số dư", style=discord.ButtonStyle.blurple, row=0)
     async def balance_button(self, interaction: discord.Interaction, _button):
         bal = get_balance(interaction.user.id)
-        await interaction.response.send_message(embed=discord.Embed(title="💰 Số dư của bạn", description=f"**{bal:,} VNĐ**", color=0x5865F2), ephemeral=True)
+        embed = discord.Embed(title="💰 Số dư của bạn", description=f"**{bal:,} VNĐ**", color=0x5865F2)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(label="🛒 Mua Key", style=discord.ButtonStyle.red, row=0)
     async def shop_button(self, interaction: discord.Interaction, _button):
-        await interaction.response.send_message(embed=build_category_embed(), view=CategorySelectView(), ephemeral=True)
+        embed = build_category_embed()
+        await interaction.response.send_message(embed=embed, view=CategorySelectView(), ephemeral=True)
 
 # =========================
-# EMBEDS
+# EMBED CREATORS
 # =========================
 def build_shop_embed() -> discord.Embed:
     embed = discord.Embed(title="🔥 SHOP KEY — AOV DUY", color=0x2F3136)
-    embed.description = "💳 **Nạp tiền** — VietQR tự động\n🛒 **Mua Key** — Nhận key qua DM\n💰 **Số dư** — Kiểm tra ví của bạn"
+    embed.description = (
+        "💳 **Nạp tiền** — VietQR tự động, cộng tiền tức thì\n"
+        "🛒 **Mua Key** — Nhận key qua DM ngay lập tức\n"
+        "💰 **Số dư** — Kiểm tra ví của bạn\n\n"
+        f"🌐 `{API_BASE}`"
+    )
+    embed.set_footer(text="Chọn chức năng bên dưới ↓")
     return embed
 
 def build_category_embed() -> discord.Embed:
@@ -414,31 +432,56 @@ async def xacnhan(ctx: commands.Context, order_id: str):
     await confirm_payment(order_id.upper())
     await ctx.send(f"✅ Đã xác nhận đơn `{order_id.upper()}`.", delete_after=10)
 
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def capnhapkey(ctx: commands.Context, user: discord.Member, amount: int):
+    new_bal = add_balance(user.id, amount)
+    await ctx.send(f"✅ Đã cộng **{amount:,} VNĐ** cho {user.mention}. Số dư: **{new_bal:,} VNĐ**")
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def doncho(ctx: commands.Context):
+    pending = [(oid, o) for oid, o in orders.items() if not o.get("paid")]
+    if not pending:
+        return await ctx.send("✅ Không có đơn nào đang chờ.")
+    lines = [f"`{oid}` — {o['amount']:,}đ — <@{o['user_id']}>" for oid, o in pending]
+    embed = discord.Embed(title=f"⏳ Đơn chờ thanh toán ({len(pending)})", color=0xFFAA00)
+    embed.description = "\n".join(lines[:20])
+    await ctx.send(embed=embed)
+
 # =========================
-# KHỞI CHẠY SONG SONG (FIX CHÍ MẠNG)
+# READY EVENT
 # =========================
 @bot.event
 async def on_ready():
-    log.info(f"✅ Bot online: {bot.user}")
+    log.info(f"✅ Bot online: {bot.user} (ID: {bot.user.id})")
     if not poll_transactions.is_running():
         poll_transactions.start()
 
+# =========================
+# KHỞI CHẠY KHÔNG BỊ CHẶN (ASYNCHRONOUS RUN)
+# =========================
 async def main():
-    # Khởi chạy Webhook Server của aiohttp trước
+    # 1. Khởi động Webhook server cục bộ trước
     app = web.Application()
     app.router.add_post("/webhook", handle_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
     await site.start()
-    log.info(f"🚀 Webhook server đang chạy tại cổng {WEBHOOK_PORT}")
+    log.info(f"🚀 Webhook server đang lắng nghe tại cổng {WEBHOOK_PORT}")
 
-    # Sau đó khởi chạy Bot Discord bằng chính event loop này
+    # 2. Khởi động Bot Discord đồng bộ trên cùng một vòng lặp sự kiện (Event Loop)
     async with bot:
         await bot.start(TOKEN)
 
 if __name__ == "__main__":
     if not TOKEN:
-        log.error("❌ THIẾU DISCORD_TOKEN TRONG ENV!")
+        log.error("❌ LỖI CHÍ MẠNG: Thiếu DISCORD_TOKEN trong cấu hình biến môi trường!")
     else:
-        asyncio.run(main())
+        # In kiểm tra độ dài Token thu được từ Render để bắt lỗi nhập trống/nhập thiếu
+        log.info(f"⚙️ Đang đọc Token từ hệ thống... Độ dài chuỗi nhận được: {len(TOKEN)} ký tự.")
+        try:
+            asyncio.run(main())
+        except KeyboardInterrupt:
+            log.info("🤖 Bot đang tắt...")
