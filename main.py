@@ -21,8 +21,11 @@ SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")   # Token webhook từ SePay (tuỳ 
 API_BASE     = os.getenv("API_BASE", "https://aovduy.onrender.com")
 
 # QUAN TRỌNG: Render tự động cấp cổng thông qua biến hệ thống 'PORT'. 
-# Nếu không có (chạy ở máy cục bộ), code sẽ tự động dùng 'WEBHOOK_PORT' hoặc mặc định '10000'.
 WEBHOOK_PORT = int(os.getenv("PORT", os.getenv("WEBHOOK_PORT", "10000")))
+
+# SỬA LỖI CHÍ MẠNG: Tự động làm sạch Token nếu bạn vô tình nhập dư dấu cách hoặc dấu nháy " " trên Render Dashboard
+if TOKEN:
+    TOKEN = TOKEN.strip().strip('"').strip("'")
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("bot")
@@ -316,7 +319,7 @@ class BuyQuantityModal(discord.ui.Modal):
                     f"🌐 {API_BASE}"
                 )
                 dm_embed.set_footer(text="Không chia sẻ key với người khác!")
-                await user.send(embed=dm_embed)
+                await user.send(dm_embed)
             except discord.Forbidden:
                 await interaction.followup.send("⚠️ Không thể DM cho bạn. Vui lòng mở DM để nhận key.", ephemeral=True)
             except Exception as e:
@@ -459,19 +462,19 @@ async def on_ready():
         poll_transactions.start()
 
 # =========================
-# KHỞI CHẠY KHÔNG BỊ CHẶN (ASYNCHRONOUS RUN)
+# ASYNCHRONOUS RUN 
 # =========================
 async def main():
-    # 1. Khởi động Webhook server cục bộ trước
+    # 1. Khởi động Webhook server cục bộ, liên kết chặt chẽ vào cổng 'PORT' của Render
     app = web.Application()
     app.router.add_post("/webhook", handle_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
     site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
     await site.start()
-    log.info(f"🚀 Webhook server đang lắng nghe tại cổng {WEBHOOK_PORT}")
+    log.info(f"🚀 Webhook server đang chạy tại cổng {WEBHOOK_PORT}")
 
-    # 2. Khởi động Bot Discord đồng bộ trên cùng một vòng lặp sự kiện (Event Loop)
+    # 2. Khởi động Bot Discord đồng thời trên cùng Event Loop
     async with bot:
         await bot.start(TOKEN)
 
@@ -479,8 +482,9 @@ if __name__ == "__main__":
     if not TOKEN:
         log.error("❌ LỖI CHÍ MẠNG: Thiếu DISCORD_TOKEN trong cấu hình biến môi trường!")
     else:
-        # In kiểm tra độ dài Token thu được từ Render để bắt lỗi nhập trống/nhập thiếu
-        log.info(f"⚙️ Đang đọc Token từ hệ thống... Độ dài chuỗi nhận được: {len(TOKEN)} ký tự.")
+        # Giúp bạn nhìn thấu log xem Render đang nạp token dạng gì để đối chiếu chính xác
+        log.info(f"⚙️ Độ dài Token sau khi làm sạch: {len(TOKEN)} ký tự.")
+        log.info(f"🔑 4 ký tự đầu: '{TOKEN[:4]}' | 4 ký tự cuối: '{TOKEN[-4:]}'")
         try:
             asyncio.run(main())
         except KeyboardInterrupt:
