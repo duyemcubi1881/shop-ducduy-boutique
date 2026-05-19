@@ -31,30 +31,32 @@ orders: dict[str, dict] = {}
 def make_order_id():
     while True:
         oid = f"NAP{random.randint(10000, 99999)}"
-        if oid not in orders: return oid
+        if oid not in orders:
+            return oid
 
 def build_qr_url(amount, order_id):
     return f"https://img.vietqr.io/image/{BANK_NAME.lower()}-{BANK_NUMBER}-compact2.png?amount={amount}&addInfo={order_id}&accountName=DUCDUY%20BOUTIQUE"
 
 async def confirm_payment(order_id: str):
     order = orders.get(order_id)
-    if not order or order.get("paid"): return
+    if not order or order.get("paid"):
+        return
     order["paid"] = True
     uid = order["user_id"]
     amount = order["amount"]
     new_bal = balances[uid] = balances.get(uid, 0) + amount
 
-    log.info(f"🎉 TỰ ĐỘNG CỘNG TIỀN THÀNH CÔNG | Đơn {order_id} | +{amount:,}đ")
+    log.info(f"🎉 TỰ ĐỘNG CỘNG TIỀN | Đơn {order_id} | +{amount:,}đ")
 
     try:
         user = await bot.fetch_user(uid)
         embed = discord.Embed(title="✅ Nạp tiền thành công!", color=0x2ECC71)
-        embed.description = f"💵 **{amount:,} VNĐ**\n💰 Số dư mới: **{new_bal:,} VNĐ**"
+        embed.description = f"💵 **{amount:,} VNĐ**\n💰 Số dư: **{new_bal:,} VNĐ**"
         await user.send(embed=embed)
     except:
         pass
 
-# ================== POLLING (ĐÃ SỬA LỖI) ==================
+# ================== POLLING (ĐÃ FIX LỖI AMOUNT) ==================
 @tasks.loop(seconds=7)
 async def poll_sepay():
     if not SEPAY_TOKEN:
@@ -74,7 +76,6 @@ async def poll_sepay():
                 timeout=10
             ) as r:
                 if r.status != 200:
-                    log.error(f"SePay status: {r.status}")
                     return
                 data = await r.json()
                 txns = data.get("transactions", [])
@@ -82,8 +83,8 @@ async def poll_sepay():
         log.info(f"📥 Nhận được {len(txns)} giao dịch")
 
         for txn in txns:
-            # SỬA LỖI Ở ĐÂY
-            raw_amount = txn.get("amount_in") or txn.get("amount") or "0"
+            # === FIX LỖI Ở ĐÂY ===
+            raw_amount = str(txn.get("amount_in") or txn.get("amount") or "0")
             try:
                 amount = int(float(raw_amount))
             except:
@@ -93,9 +94,10 @@ async def poll_sepay():
 
             for oid in list(pending):
                 order = orders.get(oid)
-                if not order or order.get("paid"): continue
+                if not order or order.get("paid"):
+                    continue
                 if oid.upper() in content and amount >= order["amount"]:
-                    log.info(f"✅ KHỚP ĐƠN! {oid} | {amount:,}đ | Nội dung: {content}")
+                    log.info(f"✅ KHỚP ĐƠN! {oid} | {amount:,}đ")
                     await confirm_payment(oid)
                     pending.remove(oid)
                     break
@@ -106,10 +108,10 @@ async def poll_sepay():
 async def handle_webhook(request: web.Request):
     if request.method == "GET":
         return web.Response(text="Webhook OK")
-    
+
     try:
         body = await request.json()
-        raw_amount = body.get("amount_in") or body.get("amount") or "0"
+        raw_amount = str(body.get("amount_in") or body.get("amount") or "0")
         amount = int(float(raw_amount))
         content = str(body.get("transaction_content") or "").strip().upper()
 
@@ -117,7 +119,7 @@ async def handle_webhook(request: web.Request):
 
         for oid, order in orders.items():
             if not order.get("paid") and oid.upper() in content and amount >= order["amount"]:
-                log.info(f"✅ WEBHOOK KHỚP → Cộng tiền {oid}")
+                log.info(f"✅ WEBHOOK KHỚP {oid}")
                 await confirm_payment(oid)
                 return web.json_response({"success": True})
     except Exception as e:
@@ -135,21 +137,21 @@ async def start_webhook():
     await web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT).start()
     log.info(f"✅ Webhook chạy port {WEBHOOK_PORT}")
 
-# ================== MODAL ==================
+# ================== MODAL NẠP ==================
 class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
-    amount = discord.ui.TextInput(label="Số tiền", placeholder="10000")
+    amount = discord.ui.TextInput(label="Số tiền muốn nạp", placeholder="10000")
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             amt = int(self.amount.value.replace(",", "").strip())
         except:
-            return await interaction.response.send_message("❌ Số tiền sai!", ephemeral=True)
+            return await interaction.response.send_message("❌ Số tiền không hợp lệ!", ephemeral=True)
 
         oid = make_order_id()
         orders[oid] = {"user_id": interaction.user.id, "amount": amt, "paid": False}
-        log.info(f"📝 Tạo đơn {oid} - {amt:,}đ")
+        log.info(f"📝 Tạo đơn: {oid} - {amt:,} VNĐ")
 
-        embed = discord.Embed(title="💳 Chuyển khoản", color=0xE91E8C)
+        embed = discord.Embed(title="💳 Thông tin chuyển khoản", color=0xE91E8C)
         embed.description = f"**Số tiền:** {amt:,} VNĐ\n**Nội dung:** `{oid}`"
         embed.set_image(url=build_qr_url(amt, oid))
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -169,7 +171,7 @@ async def on_ready():
     log.info(f"Bot online: {bot.user}")
     await start_webhook()
     poll_sepay.start()
-    log.info("🚀 Auto nạp tiền đã sẵn sàng!")
+    log.info("🚀 Hệ thống auto nạp đã sẵn sàng!")
 
 @bot.command()
 async def shop(ctx):
@@ -178,7 +180,7 @@ async def shop(ctx):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def doncho(ctx):
-    pending = [(k,v) for k,v in orders.items() if not v.get("paid")]
-    await ctx.send(f"**Đơn chờ:** {len(pending)}\n" + "\n".join(f"`{k}` → {v['amount']:,}đ" for k,v in pending))
+    pending = [(k, v) for k, v in orders.items() if not v.get("paid")]
+    await ctx.send(f"**Đơn chờ:** {len(pending)}\n" + "\n".join(f"`{k}` → {v['amount']:,}đ" for k, v in pending))
 
 bot.run(TOKEN)
