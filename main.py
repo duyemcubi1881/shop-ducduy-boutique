@@ -21,8 +21,8 @@ BANK_NUMBER    = os.getenv("BANK_NUMBER")
 BANK_NAME      = os.getenv("BANK_NAME", "msb")
 SEPAY_TOKEN    = os.getenv("SEPAY_TOKEN", "")
 API_BASE       = os.getenv("API_BASE", "https://aovduy.onrender.com")
-API_ADMIN_USER = os.getenv("API_ADMIN_USER", "admin")
-API_ADMIN_PASS = os.getenv("API_ADMIN_PASS", "admin123")
+API_ADMIN_USER = os.getenv("API_ADMIN_USER", "duyemcubi188")
+API_ADMIN_PASS = os.getenv("API_ADMIN_PASS", "ngoducduy1107@")
 WEBHOOK_PORT   = int(os.getenv("PORT", "8080"))
 
 logging.basicConfig(
@@ -745,6 +745,70 @@ async def testkey(ctx: commands.Context, pkg_id: str = "ah_1d"):
         await ctx.send(f"✅ Key tạo thành công: `{key}`", delete_after=30)
     else:
         await ctx.send(f"❌ Tạo key thất bại — xem log Render", delete_after=15)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def sepaycheck(ctx: commands.Context):
+    """!sepaycheck — kiểm tra SePay có nhận giao dịch mới không"""
+    if not SEPAY_TOKEN:
+        return await ctx.send("❌ SEPAY_TOKEN chưa cấu hình!", delete_after=10)
+    try:
+        headers = {"Authorization": f"Bearer {SEPAY_TOKEN}"}
+        async with aiohttp.ClientSession() as s:
+            # Lấy thông tin tài khoản ngân hàng
+            async with s.get(
+                "https://my.sepay.vn/userapi/bankaccounts/list",
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                acc_data = await r.json() if r.status == 200 else {}
+
+            # Lấy giao dịch mới nhất
+            async with s.get(
+                "https://my.sepay.vn/userapi/transactions/list",
+                headers=headers,
+                params={"limit": 10},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                txn_data = await r.json() if r.status == 200 else {}
+
+        accounts = acc_data.get("bankAccounts") or acc_data.get("bank_accounts") or []
+        txns     = txn_data.get("transactions", [])
+
+        lines = ["**📋 Tài khoản SePay:**"]
+        if accounts:
+            for acc in accounts:
+                name   = acc.get("bank_name") or acc.get("bankName") or "?"
+                number = acc.get("account_number") or acc.get("accountNumber") or "?"
+                status = acc.get("status") or "?"
+                lines.append(f"  • {name} `{number}` — `{status}`")
+        else:
+            lines.append("  ⚠️ Không có tài khoản nào hoặc field name khác")
+
+        lines.append(f"
+**📥 {len(txns)} giao dịch gần nhất:**")
+        if txns:
+            for txn in txns[:5]:
+                lines.append(
+                    f"  `{txn.get('transaction_date','')}` "
+                    f"**+{int(float(txn.get('amount_in',0) or 0)):,}đ** "
+                    f"— `{txn.get('transaction_content','')[:40]}`"
+                )
+        else:
+            lines.append("  ⚠️ Không có giao dịch nào — tài khoản chưa kết nối?")
+
+        pending = [(oid, o) for oid, o in orders.items() if not o.get("paid")]
+        lines.append(f"
+**⏳ Đơn chờ:** {len(pending)}")
+        for oid, o in pending[:5]:
+            lines.append(f"  `{oid}` — {o['amount']:,}đ — <@{o['user_id']}>")
+
+        e = discord.Embed(title="🔍 SePay Status", description="
+".join(lines), color=0x00BFFF)
+        await ctx.send(embed=e)
+    except Exception as ex:
+        await ctx.send(f"❌ Lỗi: {ex}", delete_after=15)
 
 
 @bot.command()
