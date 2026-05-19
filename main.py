@@ -229,65 +229,87 @@ async def poll_sepay():
     except Exception as e:
         log.debug(f"poll_sepay: {e}")
 
-# ══════════════════════════════════════════
-# WEBHOOK SERVER
-# ══════════════════════════════════════════
+# ═══════════════════════════════════════
+# WEBHOOK
+# ═══════════════════════════════════════
 
-async def handle_health(request: web.Request) -> web.Response:
-    return web.Response(text="OK", status=200)
-
-async def handle_webhook(request: web.Request) -> web.Response:
-    """
-    POST /webhook — nhan callback SePay
-    SePay gui JSON voi cac field:
-      transaction_content : noi dung chuyen khoan
-      amount_in           : so tien vao
-    """
+async def handle_webhook(request):
     try:
-        body = await request.json()
-        log.info(f"Webhook nhan: {json.dumps(body, ensure_ascii=False)[:400]}")
+
+        # TEST GET
+        if request.method == "GET":
+            return web.json_response({
+                "status": "online",
+                "message": "Webhook OK"
+            })
+
+        # POST từ SePay
+        data = await request.json()
+
+        log.info(f"Webhook DATA: {data}")
 
         content = str(
-            body.get("transaction_content") or
-            body.get("content") or
-            body.get("description") or ""
+            data.get("transaction_content", "")
         ).upper()
 
         amount = int(
-            body.get("amount_in") or
-            body.get("transferAmount") or
-            body.get("amount") or 0
+            data.get("amount_in", 0)
         )
 
-        log.info(f"Webhook content='{content}' amount={amount}")
+        for oid, order in orders.items():
 
-        for oid, order in list(orders.items()):
             if order.get("paid"):
                 continue
-            if oid.upper() in content and amount >= order["amount"]:
-                log.info(f"Webhook khop don {oid}!")
-                await confirm_payment(oid)
-                return web.json_response({"success": True, "order": oid})
 
-        log.info("Webhook khong khop don nao")
-        return web.json_response({"success": False, "reason": "no_match"})
+            if oid.upper() in content:
 
-    except json.JSONDecodeError:
-        log.warning("Webhook body khong phai JSON")
-        return web.json_response({"success": False}, status=400)
+                if amount >= order["amount"]:
+
+                    log.info(f"Khớp đơn {oid}")
+
+                    await confirm_payment(oid)
+
+                    return web.json_response({
+                        "success": True,
+                        "order": oid
+                    })
+
+        return web.json_response({
+            "success": False,
+            "message": "Không tìm thấy đơn"
+        })
+
     except Exception as e:
-        log.error(f"Webhook loi: {e}")
-        return web.json_response({"success": False}, status=500)
+
+        log.error(f"WEBHOOK ERROR: {e}")
+
+        return web.json_response({
+            "success": False
+        })
+
 
 async def start_webhook_server():
+
     app = web.Application()
-    app.router.add_route("*", "/",        handle_health)
-    app.router.add_post("/webhook",       handle_webhook)
+
+    app.router.add_get("/", handle_health)
+
+    # QUAN TRỌNG
+    app.router.add_route("*", "/webhook", handle_webhook)
+
     runner = web.AppRunner(app)
+
     await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT).start()
-    log.info(f"Webhook server cong {WEBHOOK_PORT}")
-    log.info(f"SePay URL: https://shopducduyboutique.onrender.com/webhook")
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        WEBHOOK_PORT
+    )
+
+    await site.start()
+
+    log.info(f"Webhook chạy cổng {WEBHOOK_PORT}")
 
 # ══════════════════════════════════════════
 # MODAL NAP TIEN
