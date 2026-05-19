@@ -3,7 +3,6 @@ from discord.ext import commands, tasks
 from dotenv import load_dotenv
 from aiohttp import web
 import aiohttp
-import asyncio
 import os
 import random
 import logging
@@ -40,7 +39,7 @@ async def confirm_payment(order_id: str):
     amount = order["amount"]
     new_bal = balances[uid] = balances.get(uid, 0) + amount
 
-    log.info(f"🎉 THÀNH CÔNG - Cộng {amount:,}đ cho đơn {order_id} (User {uid})")
+    log.info(f"🎉 THÀNH CÔNG | Cộng {amount:,}đ | Đơn {order_id}")
 
     try:
         user = await bot.fetch_user(uid)
@@ -50,96 +49,59 @@ async def confirm_payment(order_id: str):
     except:
         pass
 
-# ================== POLLING DEBUG MẠNH ==================
+# ================== POLLING ==================
 @tasks.loop(seconds=6)
 async def poll_sepay():
-    pending_orders = {oid: data for oid, data in orders.items() if not data.get("paid")}
-    log.info(f"📊 Đơn chờ: {len(pending_orders)}")
+    pending = {oid: data for oid, data in orders.items() if not data.get("paid")}
+    log.info(f"📊 Đơn chờ: {len(pending)}")
 
-    if not pending_orders or not SEPAY_TOKEN:
+    if not pending or not SEPAY_TOKEN:
         return
 
     try:
         headers = {"Authorization": f"Bearer {SEPAY_TOKEN}"}
         async with aiohttp.ClientSession() as s:
-            async with s.get(
-                "https://my.sepay.vn/userapi/transactions/list",
-                headers=headers, params={"limit": 30}, timeout=10
-            ) as r:
+            async with s.get("https://my.sepay.vn/userapi/transactions/list",
+                           headers=headers, params={"limit": 30}, timeout=10) as r:
                 if r.status != 200: return
                 data = await r.json()
                 txns = data.get("transactions", [])
 
-        log.info(f"📥 Nhận được {len(txns)} giao dịch từ SePay")
-
         for txn in txns:
-            raw_amount = str(txn.get("amount_in") or txn.get("amount") or "0")
-            try:
-                amount = int(float(raw_amount))
-            except:
-                continue
+            raw_amount = str(txn.get("amount_in") or 0)
+            amount = int(float(raw_amount))
+            content = str(txn.get("transaction_content") or "").strip()
 
-            content = str(txn.get("transaction_content") or txn.get("content") or "").strip()
             log.info(f"🔍 Giao dịch: {amount:,}đ | Nội dung: '{content}'")
 
-            for oid, order in list(pending_orders.items()):
+            for oid, order in list(pending.items()):
                 if oid.upper() in content.upper() and amount >= order["amount"]:
-                    log.info(f"🎯 KHỚP ĐƠN! {oid} | Số tiền {amount:,}đ")
+                    log.info(f"🎯 KHỚP ĐƠN {oid} → Cộng tiền!")
                     await confirm_payment(oid)
-                    del pending_orders[oid]
+                    del pending[oid]
                     break
     except Exception as e:
         log.error(f"Poll lỗi: {e}")
 
-# ================== WEBHOOK ==================
-async def handle_webhook(request: web.Request):
-    if request.method == "GET":
-        return web.Response(text="OK")
-
-    try:
-        body = await request.json()
-        raw_amount = str(body.get("amount_in") or 0)
-        amount = int(float(raw_amount))
-        content = str(body.get("transaction_content") or "").strip()
-
-        log.info(f"📥 WEBHOOK NHẬN: {amount:,}đ | Nội dung: '{content}'")
-
-        for oid, order in orders.items():
-            if not order.get("paid") and oid.upper() in content.upper() and amount >= order["amount"]:
-                log.info(f"🎉 WEBHOOK KHỚP → Cộng tiền đơn {oid}")
-                await confirm_payment(oid)
-                return web.json_response({"success": True})
-    except Exception as e:
-        log.error(f"Webhook lỗi: {e}")
-
-    return web.json_response({"success": False})
-
-async def start_webhook():
-    app = web.Application()
-    app.router.add_get("/", lambda r: web.Response(text="OK"))
-    app.router.add_get("/webhook", handle_webhook)
-    app.router.add_post("/webhook", handle_webhook)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT).start()
-    log.info(f"Webhook chạy port {WEBHOOK_PORT}")
-
 # ================== MODAL ==================
 class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
-    amount = discord.ui.TextInput(label="Số tiền muốn nạp", placeholder="10000")
+    amount = discord.ui.TextInput(label="Số tiền", placeholder="10000")
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
             amt = int(self.amount.value.replace(",", "").strip())
         except:
-            return await interaction.response.send_message("❌ Số tiền không hợp lệ!", ephemeral=True)
+            return await interaction.response.send_message("❌ Số tiền sai!", ephemeral=True)
 
         oid = make_order_id()
         orders[oid] = {"user_id": interaction.user.id, "amount": amt, "paid": False}
-        log.info(f"📝 Tạo đơn: {oid} - {amt:,} VNĐ")
 
         embed = discord.Embed(title="💳 Thông tin chuyển khoản", color=0xE91E8C)
-        embed.description = f"**Số tiền:** {amt:,} VNĐ\n**Nội dung CK:** `{oid}`\n\n⚠️ **Nhập đúng nguyên mã này**"
+        embed.description = (
+            f"**Số tiền:** {amt:,} VNĐ\n"
+            f"**Nội dung CK:** `{oid}`\n\n"
+            "**⚠️ BẮT BUỘC phải ghi đúng mã này vào nội dung chuyển khoản**"
+        )
         embed.set_image(url=build_qr_url(amt, oid))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -155,7 +117,6 @@ class ShopView(discord.ui.View):
 @bot.event
 async def on_ready():
     log.info(f"Bot online: {bot.user}")
-    await start_webhook()
     poll_sepay.start()
     log.info("🚀 Auto nạp đang chạy...")
 
