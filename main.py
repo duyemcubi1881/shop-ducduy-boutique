@@ -8,6 +8,7 @@ import os
 import random
 import json
 import logging
+import time
 
 # ══════════════════════════════════════════
 # LOAD ENV
@@ -20,12 +21,12 @@ BANK_NUMBER    = os.getenv("BANK_NUMBER")
 BANK_NAME      = os.getenv("BANK_NAME", "msb")
 SEPAY_TOKEN    = os.getenv("SEPAY_TOKEN", "")
 API_BASE       = os.getenv("API_BASE", "https://aovduy.onrender.com")
-API_ADMIN_USER = os.getenv("API_ADMIN_USER", "admin")    # admin backend
-API_ADMIN_PASS = os.getenv("API_ADMIN_PASS", "admin123") # password backend
+API_ADMIN_USER = os.getenv("API_ADMIN_USER", "admin")
+API_ADMIN_PASS = os.getenv("API_ADMIN_PASS", "admin123")
 WEBHOOK_PORT   = int(os.getenv("PORT", "8080"))
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,   # ← DEBUG để thấy log so sánh đơn
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
@@ -113,22 +114,14 @@ def build_qr_url(amount: int, order_id: str) -> str:
 
 # ══════════════════════════════════════════
 # GỌI BACKEND TẠO KEY
-# Flow: POST /api/login → lấy session cookie
-#       POST /api/createkey → lấy key string
 # ══════════════════════════════════════════
 
 async def fetch_key(package_id: str) -> str | None:
-    """
-    Đăng nhập backend rồi tạo key theo số ngày của gói.
-    Dùng aiohttp.ClientSession để giữ cookie giữa 2 request.
-    """
     pkg  = PKG.get(package_id)
     days = pkg["days"] if pkg else 1
 
     try:
         async with aiohttp.ClientSession() as s:
-
-            # Bước 1: Đăng nhập lấy session
             login_resp = await s.post(
                 f"{API_BASE}/api/login",
                 json={"username": API_ADMIN_USER, "password": API_ADMIN_PASS},
@@ -136,11 +129,10 @@ async def fetch_key(package_id: str) -> str | None:
             )
             if login_resp.status != 200:
                 body = await login_resp.text()
-                log.error(f"Login backend that bai {login_resp.status}: {body[:200]}")
+                log.error(f"Login backend thất bại {login_resp.status}: {body[:200]}")
                 return None
-            log.info(f"Login backend OK, tao key {days} ngay cho {package_id}")
+            log.info(f"Login backend OK, tạo key {days} ngày cho {package_id}")
 
-            # Bước 2: Tạo key
             key_resp = await s.post(
                 f"{API_BASE}/api/createkey",
                 json={
@@ -154,14 +146,14 @@ async def fetch_key(package_id: str) -> str | None:
             data = await key_resp.json()
             if key_resp.status == 201:
                 key_str = data.get("key")
-                log.info(f"Tao key thanh cong: {key_str}")
+                log.info(f"Tạo key thành công: {key_str}")
                 return key_str
             else:
-                log.error(f"Tao key that bai {key_resp.status}: {data}")
+                log.error(f"Tạo key thất bại {key_resp.status}: {data}")
                 return None
 
     except Exception as e:
-        log.error(f"fetch_key loi: {e}")
+        log.error(f"fetch_key lỗi: {e}")
         return None
 
 # ══════════════════════════════════════════
@@ -176,7 +168,7 @@ async def confirm_payment(order_id: str):
     uid    = order["user_id"]
     amount = order["amount"]
     bal    = add_balance(uid, amount)
-    log.info(f"Xac nhan don {order_id} | +{amount:,}d | user {uid} | du {bal:,}d")
+    log.info(f"✅ Xác nhận đơn {order_id} | +{amount:,}đ | user {uid} | dư {bal:,}đ")
     try:
         user = await bot.fetch_user(uid)
         embed = discord.Embed(title="✅  Nạp tiền thành công!", color=0x2ECC71)
@@ -189,18 +181,22 @@ async def confirm_payment(order_id: str):
         embed.set_footer(text="ducduy boutique")
         await user.send(embed=embed)
     except Exception as e:
-        log.warning(f"Khong DM duoc user {uid}: {e}")
+        log.warning(f"Không DM được user {uid}: {e}")
 
 # ══════════════════════════════════════════
-# POLLING SEPAY (du phong, chay moi 15 giay)
-# Goi thang API SePay de doi chieu giao dich
+# POLLING SEPAY (chạy mỗi 15 giây)
 # ══════════════════════════════════════════
 
 @tasks.loop(seconds=15)
 async def poll_sepay():
     pending = [oid for oid, o in orders.items() if not o.get("paid")]
+    log.info(f"📊 Đang có {len(pending)} đơn chờ: {pending}")
+
     if not pending or not SEPAY_TOKEN:
+        if not SEPAY_TOKEN:
+            log.warning("⚠️ SEPAY_TOKEN chưa được cấu hình!")
         return
+
     try:
         headers = {"Authorization": f"Bearer {SEPAY_TOKEN}"}
         async with aiohttp.ClientSession() as s:
@@ -211,23 +207,60 @@ async def poll_sepay():
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
                 if r.status != 200:
-                    log.debug(f"SePay poll tra {r.status}")
+                    log.warning(f"SePay poll trả {r.status}")
                     return
                 data = await r.json()
                 txns = data.get("transactions", [])
-                log.debug(f"SePay poll: {len(txns)} giao dich")
+                log.info(f"📥 Nhận được {len(txns)} giao dịch từ SePay")
 
+                # ── In chi tiết từng giao dịch để debug ──
+                for i, txn in enumerate(txns[:10]):
+                    log.debug(
+                        f"  TXN[{i}] "
+                        f"id={txn.get('id')} | "
+                        f"content='{txn.get('transaction_content', '')}' | "
+                        f"amount_in={txn.get('amount_in')} | "
+                        f"date={txn.get('transaction_date', '')}"
+                    )
+
+        matched = False
         for txn in txns:
-            content = str(txn.get("transaction_content", "")).upper()
-            amount  = int(txn.get("amount_in", 0) or 0)
+            # Lấy nội dung — thử nhiều field khác nhau
+            content = str(
+                txn.get("transaction_content") or
+                txn.get("content") or
+                txn.get("description") or ""
+            ).upper().strip()
+
+            # Lấy số tiền — xử lý an toàn cả string lẫn float
+            try:
+                amount = int(float(txn.get("amount_in") or txn.get("amount") or 0))
+            except (ValueError, TypeError):
+                amount = 0
+
             for oid in list(pending):
-                if oid.upper() in content and amount >= orders[oid]["amount"]:
-                    log.info(f"Polling khop don {oid}!")
+                order_amount = orders[oid]["amount"]
+                oid_in_content = oid.upper() in content
+                amount_ok = amount >= order_amount
+
+                log.debug(
+                    f"  So sánh đơn '{oid}': "
+                    f"'{oid.upper()}' in content={oid_in_content} | "
+                    f"amount {amount} >= {order_amount} = {amount_ok}"
+                )
+
+                if oid_in_content and amount_ok:
+                    log.info(f"✅ Polling khớp đơn {oid}!")
                     await confirm_payment(oid)
                     pending.remove(oid)
+                    matched = True
                     break
+
+        if not matched:
+            log.info(f"⚠️ Không khớp đơn nào. Danh sách đơn chờ: {pending}")
+
     except Exception as e:
-        log.debug(f"poll_sepay: {e}")
+        log.error(f"poll_sepay lỗi: {e}", exc_info=True)
 
 # ══════════════════════════════════════════
 # WEBHOOK SERVER
@@ -237,46 +270,50 @@ async def handle_health(request: web.Request) -> web.Response:
     return web.Response(text="OK", status=200)
 
 async def handle_webhook(request: web.Request) -> web.Response:
-    """
-    POST /webhook — nhan callback SePay
-    SePay gui JSON voi cac field:
-      transaction_content : noi dung chuyen khoan
-      amount_in           : so tien vao
-    """
     try:
         body = await request.json()
-        log.info(f"Webhook nhan: {json.dumps(body, ensure_ascii=False)[:400]}")
+        log.info(f"📨 Webhook nhận: {json.dumps(body, ensure_ascii=False)[:600]}")
 
         content = str(
             body.get("transaction_content") or
             body.get("content") or
             body.get("description") or ""
-        ).upper()
+        ).upper().strip()
 
-        amount = int(
-            body.get("amount_in") or
-            body.get("transferAmount") or
-            body.get("amount") or 0
-        )
+        try:
+            amount = int(float(
+                body.get("amount_in") or
+                body.get("transferAmount") or
+                body.get("amount") or 0
+            ))
+        except (ValueError, TypeError):
+            amount = 0
 
-        log.info(f"Webhook content='{content}' amount={amount}")
+        log.info(f"📨 Webhook parsed → content='{content}' | amount={amount}")
 
         for oid, order in list(orders.items()):
             if order.get("paid"):
                 continue
-            if oid.upper() in content and amount >= order["amount"]:
-                log.info(f"Webhook khop don {oid}!")
+            oid_in_content = oid.upper() in content
+            amount_ok = amount >= order["amount"]
+            log.debug(
+                f"  Webhook so sánh '{oid}': "
+                f"in_content={oid_in_content} | "
+                f"amount {amount}>={order['amount']} = {amount_ok}"
+            )
+            if oid_in_content and amount_ok:
+                log.info(f"✅ Webhook khớp đơn {oid}!")
                 await confirm_payment(oid)
                 return web.json_response({"success": True, "order": oid})
 
-        log.info("Webhook khong khop don nao")
+        log.info("⚠️ Webhook không khớp đơn nào")
         return web.json_response({"success": False, "reason": "no_match"})
 
     except json.JSONDecodeError:
-        log.warning("Webhook body khong phai JSON")
+        log.warning("Webhook body không phải JSON")
         return web.json_response({"success": False}, status=400)
     except Exception as e:
-        log.error(f"Webhook loi: {e}")
+        log.error(f"Webhook lỗi: {e}", exc_info=True)
         return web.json_response({"success": False}, status=500)
 
 async def start_webhook_server():
@@ -286,8 +323,8 @@ async def start_webhook_server():
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT).start()
-    log.info(f"Webhook server cong {WEBHOOK_PORT}")
-    log.info(f"SePay URL: https://shopducduyboutique.onrender.com/webhook")
+    log.info(f"✅ Webhook server cổng {WEBHOOK_PORT}")
+    log.info(f"🌐 SePay URL: https://shopducduyboutique.onrender.com/webhook")
 
 # ══════════════════════════════════════════
 # MODAL NAP TIEN
@@ -316,10 +353,12 @@ class DepositModal(discord.ui.Modal, title="💳  Nạp tiền"):
 
         order_id = make_order_id()
         orders[order_id] = {
-            "user_id": interaction.user.id,
-            "amount":  amount,
-            "paid":    False,
+            "user_id":    interaction.user.id,
+            "amount":     amount,
+            "paid":       False,
+            "created_at": time.time(),
         }
+        log.info(f"📝 Tạo đơn: {order_id} - {amount:,} VNĐ - user {interaction.user.id}")
 
         embed = discord.Embed(title="💳  Thông tin chuyển khoản", color=0xE91E8C)
         embed.description = (
@@ -383,7 +422,6 @@ class BuyModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         deduct_balance(uid, total)
 
-        # Tao key tu backend
         keys_ok  = []
         keys_err = 0
         for _ in range(qty):
@@ -393,7 +431,6 @@ class BuyModal(discord.ui.Modal):
             else:
                 keys_err += 1
 
-        # Hoan tien neu co loi
         if keys_err:
             add_balance(uid, pkg["price"] * keys_err)
 
@@ -415,7 +452,6 @@ class BuyModal(discord.ui.Modal):
             )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-        # DM key cho user
         if keys_ok:
             try:
                 user     = await bot.fetch_user(uid)
@@ -440,7 +476,7 @@ class BuyModal(discord.ui.Modal):
                     "⚠️ Không gửi DM được. Hãy mở DM để nhận key!", ephemeral=True
                 )
             except Exception as e:
-                log.error(f"DM key loi: {e}")
+                log.error(f"DM key lỗi: {e}")
 
 # ══════════════════════════════════════════
 # VIEWS
@@ -591,7 +627,7 @@ async def congcoin(ctx: commands.Context, user: discord.Member, amount: int):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def doncho(ctx: commands.Context):
-    """!doncho — xem don chua thanh toan"""
+    """!doncho — xem đơn chưa thanh toán"""
     pending = [(oid, o) for oid, o in orders.items() if not o.get("paid")]
     if not pending:
         return await ctx.send("✅ Không có đơn nào đang chờ.")
@@ -607,7 +643,7 @@ async def doncho(ctx: commands.Context):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def info(ctx: commands.Context):
-    """!info — trang thai bot"""
+    """!info — trạng thái bot"""
     pending = len([o for o in orders.values() if not o.get("paid")])
     await ctx.send(
         f"✅ **{bot.user}**\n"
@@ -622,13 +658,50 @@ async def info(ctx: commands.Context):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def testkey(ctx: commands.Context, pkg_id: str = "ah_1d"):
-    """!testkey [pkg_id] — test tao key tu backend"""
+    """!testkey [pkg_id] — test tạo key từ backend"""
     await ctx.send(f"⏳ Đang tạo key `{pkg_id}`...", delete_after=5)
     key = await fetch_key(pkg_id)
     if key:
         await ctx.send(f"✅ Key tạo thành công: `{key}`", delete_after=30)
     else:
         await ctx.send(f"❌ Tạo key thất bại — xem log Render", delete_after=15)
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def debugsepay(ctx: commands.Context):
+    """!debugsepay — xem raw response từ SePay"""
+    if not SEPAY_TOKEN:
+        return await ctx.send("❌ SEPAY_TOKEN chưa được cấu hình!", delete_after=10)
+    await ctx.send("⏳ Đang gọi SePay...", delete_after=5)
+    try:
+        headers = {"Authorization": f"Bearer {SEPAY_TOKEN}"}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                "https://my.sepay.vn/userapi/transactions/list",
+                headers=headers,
+                params={"limit": 5},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                data = await r.json()
+                txns = data.get("transactions", [])
+                if not txns:
+                    return await ctx.send("⚠️ SePay không có giao dịch nào.", delete_after=15)
+                lines = []
+                for i, txn in enumerate(txns[:5]):
+                    lines.append(
+                        f"**[{i}]** `{txn.get('transaction_content', 'N/A')}` "
+                        f"| {int(float(txn.get('amount_in', 0) or 0)):,}đ "
+                        f"| {txn.get('transaction_date', 'N/A')}"
+                    )
+                e = discord.Embed(
+                    title="🔍 SePay Debug — 5 giao dịch gần nhất",
+                    description="\n".join(lines),
+                    color=0x00BFFF,
+                )
+                await ctx.send(embed=e)
+    except Exception as ex:
+        await ctx.send(f"❌ Lỗi: {ex}", delete_after=15)
 
 # ══════════════════════════════════════════
 # READY
@@ -639,22 +712,26 @@ _webhook_started = False
 @bot.event
 async def on_ready():
     global _webhook_started
-    log.info(f"Bot online: {bot.user}  (ID: {bot.user.id})")
+    log.info(f"🤖 Bot online: {bot.user}  (ID: {bot.user.id})")
 
     if not _webhook_started:
         try:
             await start_webhook_server()
             _webhook_started = True
-            log.info("Webhook OK")
         except Exception as e:
-            log.error(f"Webhook loi: {e}")
+            log.error(f"Webhook lỗi: {e}")
 
     try:
         if not poll_sepay.is_running():
             poll_sepay.start()
-            log.info("Polling SePay OK")
+            log.info("✅ Polling SePay OK")
     except Exception as e:
-        log.error(f"Polling loi: {e}")
+        log.error(f"Polling lỗi: {e}")
+
+    if not SEPAY_TOKEN:
+        log.warning("⚠️ SEPAY_TOKEN chưa được cấu hình trong .env!")
+    else:
+        log.info(f"✅ SEPAY_TOKEN đã cấu hình ({SEPAY_TOKEN[:8]}...)")
 
 # ══════════════════════════════════════════
 # RUN
