@@ -28,8 +28,11 @@ def make_order_id():
         oid = f"NAP{random.randint(10000, 99999)}"
         if oid not in orders: return oid
 
-def build_qr_url(amount, order_id):
-    return f"https://img.vietqr.io/image/{BANK_NAME.lower()}-{BANK_NUMBER}-compact2.png?amount={amount}&addInfo={order_id}&accountName=DUCDUY%20BOUTIQUE"
+def build_qr_url(amount: int, order_id: str) -> str:
+    return (
+        f"https://img.vietqr.io/image/{BANK_NAME.lower()}-{BANK_NUMBER}-compact2.png"
+        f"?amount={amount}&addInfo={order_id}&accountName=NGO%20DUC%20DUY"
+    )
 
 async def confirm_payment(order_id: str):
     order = orders.get(order_id)
@@ -39,7 +42,7 @@ async def confirm_payment(order_id: str):
     amount = order["amount"]
     new_bal = balances[uid] = balances.get(uid, 0) + amount
 
-    log.info(f"🎉 THÀNH CÔNG | Cộng {amount:,}đ | Đơn {order_id}")
+    log.info(f"🎉 THÀNH CÔNG | Cộng {amount:,}đ | Đơn {order_id} | User {uid}")
 
     try:
         user = await bot.fetch_user(uid)
@@ -49,34 +52,43 @@ async def confirm_payment(order_id: str):
     except:
         pass
 
-# ================== POLLING ==================
-@tasks.loop(seconds=6)
+# ================== POLLING - MATCHING LINH HOẠT ==================
+@tasks.loop(seconds=5)
 async def poll_sepay():
     pending = {oid: data for oid, data in orders.items() if not data.get("paid")}
-    log.info(f"📊 Đơn chờ: {len(pending)}")
-
-    if not pending or not SEPAY_TOKEN:
+    if not pending:
         return
+
+    log.info(f"📊 Đơn chờ: {len(pending)}")
 
     try:
         headers = {"Authorization": f"Bearer {SEPAY_TOKEN}"}
         async with aiohttp.ClientSession() as s:
-            async with s.get("https://my.sepay.vn/userapi/transactions/list",
-                           headers=headers, params={"limit": 30}, timeout=10) as r:
+            async with s.get(
+                "https://my.sepay.vn/userapi/transactions/list",
+                headers=headers, params={"limit": 30}, timeout=10
+            ) as r:
                 if r.status != 200: return
                 data = await r.json()
                 txns = data.get("transactions", [])
 
         for txn in txns:
             raw_amount = str(txn.get("amount_in") or 0)
-            amount = int(float(raw_amount))
-            content = str(txn.get("transaction_content") or "").strip()
+            try:
+                amount = int(float(raw_amount))
+            except:
+                continue
 
+            content = str(txn.get("transaction_content") or "").strip()
             log.info(f"🔍 Giao dịch: {amount:,}đ | Nội dung: '{content}'")
 
             for oid, order in list(pending.items()):
-                if oid.upper() in content.upper() and amount >= order["amount"]:
-                    log.info(f"🎯 KHỚP ĐƠN {oid} → Cộng tiền!")
+                # Matching linh hoạt hơn
+                if (oid.upper() in content.upper() or 
+                    oid[3:].upper() in content.upper() or 
+                    oid.lower() in content.lower()) and amount >= order["amount"]:
+                    
+                    log.info(f"🎯 KHỚP ĐƠN {oid} → Tự động cộng tiền!")
                     await confirm_payment(oid)
                     del pending[oid]
                     break
@@ -91,7 +103,7 @@ class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
         try:
             amt = int(self.amount.value.replace(",", "").strip())
         except:
-            return await interaction.response.send_message("❌ Số tiền sai!", ephemeral=True)
+            return await interaction.response.send_message("❌ Số tiền không hợp lệ!", ephemeral=True)
 
         oid = make_order_id()
         orders[oid] = {"user_id": interaction.user.id, "amount": amt, "paid": False}
@@ -100,7 +112,7 @@ class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
         embed.description = (
             f"**Số tiền:** {amt:,} VNĐ\n"
             f"**Nội dung CK:** `{oid}`\n\n"
-            "**⚠️ BẮT BUỘC phải ghi đúng mã này vào nội dung chuyển khoản**"
+            "**⚠️ YÊU CẦU: Ghi đúng & chỉ ghi mã đơn này vào nội dung chuyển khoản**"
         )
         embed.set_image(url=build_qr_url(amt, oid))
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -129,5 +141,11 @@ async def shop(ctx):
 async def doncho(ctx):
     pending = [(k,v) for k,v in orders.items() if not v.get("paid")]
     await ctx.send(f"**Đơn chờ:** {len(pending)}\n" + "\n".join(f"`{k}` → {v['amount']:,}đ" for k,v in pending))
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def xacnhan(ctx, order_id: str):
+    await confirm_payment(order_id.upper())
+    await ctx.send(f"✅ Đã xác nhận thủ công đơn {order_id.upper()}")
 
 bot.run(TOKEN)
