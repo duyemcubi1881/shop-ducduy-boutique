@@ -17,7 +17,7 @@ load_dotenv()
 
 TOKEN        = os.getenv("DISCORD_TOKEN")
 BANK_NUMBER  = os.getenv("BANK_NUMBER")       # Số tài khoản ngân hàng
-BANK_NAME    = os.getenv("BANK_NAME")         # Tên ngân hàng viết tắt, VD: "vietcombank"
+BANK_NAME    = os.getenv("BANK_NAME", "msb")  # MSBBANK → dùng "msb" trong VietQR
 SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")   # Token webhook từ SePay (tuỳ chọn)
 API_BASE     = os.getenv("API_BASE", "https://aovduy.onrender.com")
 WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8080"))
@@ -94,12 +94,15 @@ def deduct_balance(user_id: int, amount: int) -> bool:
     return True
 
 def build_qr_url(amount: int, order_id: str) -> str:
+    # MSBBank dùng mã "msb" trong VietQR
+    # Kiểm tra danh sách đầy đủ: https://api.vietqr.io/v2/banks
+    bank = BANK_NAME.lower().strip()
     return (
         f"https://img.vietqr.io/image/"
-        f"{BANK_NAME}-{BANK_NUMBER}-compact2.png"
+        f"{bank}-{BANK_NUMBER}-compact2.png"
         f"?amount={amount}"
         f"&addInfo={order_id}"
-        f"&accountName=SHOP%20KEY"
+        f"&accountName=DUCDUY%20BOUTIQUE"
     )
 
 async def fetch_key_from_api(package_id: str) -> str | None:
@@ -265,17 +268,24 @@ class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
 
         qr_url = build_qr_url(amount, order_id)
 
-        embed = discord.Embed(title="💳 Thông tin chuyển khoản", color=0x00BFFF)
+        embed = discord.Embed(
+            title="💳  Thông tin chuyển khoản",
+            color=0xE91E8C,
+        )
         embed.description = (
-            f"💰 Số tiền: **{amount:,} VNĐ**\n"
-            f"🏦 Ngân hàng: **{BANK_NAME.upper()}**\n"
-            f"🔢 Số tài khoản: `{BANK_NUMBER}`\n"
-            f"📝 Nội dung CK: **`{order_id}`** *(bắt buộc)*\n\n"
-            f"📱 Quét mã QR bên dưới hoặc chuyển khoản thủ công.\n"
-            f"✅ Bot sẽ **tự động cộng tiền** sau khi nhận được giao dịch."
+            "```\n"
+            "═══════════════════════════════\n"
+            f"  💰  Số tiền : {amount:,} VNĐ\n"
+            f"  🏦  Ngân hàng : MSB Bank\n"
+            f"  🔢  Số TK : {BANK_NUMBER}\n"
+            "═══════════════════════════════\n"
+            "```"
+            f"📝 Nội dung chuyển khoản:\n> **`{order_id}`**  ← *Bắt buộc, không được sửa*\n\n"
+            "📱 Quét mã QR bên dưới\n"
+            "✅ Bot tự động cộng tiền sau khi nhận giao dịch"
         )
         embed.set_image(url=qr_url)
-        embed.set_footer(text=f"Mã đơn: {order_id} • Hết hạn sau 15 phút")
+        embed.set_footer(text=f"⏳ Mã đơn hết hạn sau 15 phút  •  {order_id}")
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
@@ -361,19 +371,26 @@ class BuyQuantityModal(discord.ui.Modal):
             try:
                 user = await bot.fetch_user(user_id)
                 dm_embed = discord.Embed(
-                    title="🔑 Key của bạn đây!",
-                    color=0xFFD700,
+                    title="🔑  Key của bạn đây!",
+                    color=0xE91E8C,
                 )
                 key_list = "\n".join(f"`{k}`" for k in keys_received)
                 dm_embed.description = (
+                    "```\n"
+                    "═══════════════════════════════\n"
+                    f"  ✅  Mua thành công\n"
+                    "═══════════════════════════════\n"
+                    "```"
                     f"🛒 Sản phẩm: **{pkg['name']}**\n"
-                    f"⏱ Thời gian sử dụng: **{pkg['duration']}**\n\n"
-                    f"**Key:**\n{key_list}\n\n"
-                    f"📁 File & hướng dẫn sử dụng trong server\n"
-                    f"🙏 Cảm ơn bạn đã sử dụng dịch vụ\n"
-                    f"🌐 {API_BASE}"
+                    f"⏱️ Thời hạn: **{pkg['duration']}**\n\n"
+                    f"🔑 **Key:**\n{key_list}\n\n"
+                    "```\n"
+                    "───────────────────────────────\n"
+                    "```"
+                    "📁 File & hướng dẫn sử dụng trong server\n"
+                    "🙏 Cảm ơn bạn đã sử dụng **ducduy boutique**"
                 )
-                dm_embed.set_footer(text="Không chia sẻ key với người khác!")
+                dm_embed.set_footer(text="⚠️ Không chia sẻ key với người khác!")
                 await user.send(embed=dm_embed)
             except discord.Forbidden:
                 await interaction.followup.send(
@@ -489,16 +506,30 @@ class ShopView(discord.ui.View):
 
 def build_shop_embed() -> discord.Embed:
     embed = discord.Embed(
-        title="🔥 SHOP KEY — AOV DUY",
-        color=0x2F3136,
+        title="🛍️  Shop Key Tự Động — ducduy boutique",
+        color=0xE91E8C,
     )
     embed.description = (
-        "💳 **Nạp tiền** — VietQR tự động, cộng tiền tức thì\n"
-        "🛒 **Mua Key** — Nhận key qua DM ngay lập tức\n"
-        "💰 **Số dư** — Kiểm tra ví của bạn\n\n"
-        f"🌐 `{API_BASE}`"
+        "```\n"
+        "═══════════════════════════════\n"
+        "🔥  SẢN PHẨM ĐANG BÁN\n"
+        "═══════════════════════════════\n"
+        "```"
+        "🎯 **Legit Drag**　　　　🔫 **Aimbot Head**\n"
+        "💰 Từ **3,000 VNĐ**　　💰 Từ **5,000 VNĐ**\n"
+        "```\n"
+        "───────────────────────────────\n"
+        "```"
+        "📦 Nhận key qua DM ngay lập tức\n"
+        "⚡ Thanh toán VietQR tự động\n"
+        "```\n"
+        "═══════════════════════════════\n"
+        " 💬  SUPPORT\n"
+        "═══════════════════════════════\n"
+        "```"
+        "📩 DM trực tiếp: **@CubiShop**"
     )
-    embed.set_footer(text="Chọn chức năng bên dưới ↓")
+    embed.set_footer(text="ducduy boutique  •  Chọn chức năng bên dưới ↓")
     return embed
 
 def build_category_embed() -> discord.Embed:
@@ -529,6 +560,11 @@ def build_package_embed(product_key: str) -> discord.Embed:
 
 @bot.command()
 async def shop(ctx: commands.Context):
+    # Xoá tin nhắn lệnh !shop của user để giao diện sạch
+    try:
+        await ctx.message.delete()
+    except Exception:
+        pass
     embed = build_shop_embed()
     await ctx.send(embed=embed, view=ShopView())
 
