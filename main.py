@@ -226,8 +226,7 @@ async def handle_webhook(request: web.Request) -> web.Response:
 
 async def start_webhook_server():
     app = web.Application()
-    app.router.add_get("/",         handle_health)
-    app.router.add_head("/",        handle_health)
+    app.router.add_route("*", "/",        handle_health)
     app.router.add_post("/webhook", handle_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -463,18 +462,18 @@ def embed_shop() -> discord.Embed:
     e = discord.Embed(title="🛍️  Shop Key Tự Động — ducduy boutique", color=0xE91E8C)
     e.description = (
         "```\n"
-        "╔══════════════════════════════╗\n"
+        "\n"
         "    🔥  SAN PHAM DANG BAN\n"
-        "╠══════════════════════════════╣\n"
+        "\n"
         "  🎯 Legit Drag  |  🔫 Aimbot Head\n"
         "  💰 Tu 3,000d   |  💰 Tu 5,000d\n"
-        "╠══════════════════════════════╣\n"
+        "\n"
         "  📦 Nhan key qua DM tuc thi\n"
         "  ⚡ VietQR - cong tien tu dong\n"
-        "╠══════════════════════════════╣\n"
+        "\n"
         "    💬  SUPPORT\n"
         "  📩 DM: @CubiShop\n"
-        "╚══════════════════════════════╝\n"
+        "\n"
         "```"
     )
     e.set_footer(text="ducduy boutique  •  Chon chuc nang ben duoi")
