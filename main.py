@@ -42,17 +42,17 @@ async def confirm_payment(order_id: str):
     amount = order["amount"]
     new_bal = balances[uid] = balances.get(uid, 0) + amount
 
-    log.info(f"🎉 THÀNH CÔNG | Cộng {amount:,}đ | Đơn {order_id} | User {uid}")
+    log.info(f"🎉 THÀNH CÔNG | Cộng {amount:,}đ | Đơn {order_id}")
 
     try:
         user = await bot.fetch_user(uid)
         embed = discord.Embed(title="✅ Nạp tiền thành công!", color=0x2ECC71)
-        embed.description = f"💵 Số tiền: **{amount:,} VNĐ**\n💰 Số dư: **{new_bal:,} VNĐ**\n🧾 Mã đơn: `{order_id}`"
+        embed.description = f"💵 Số tiền: **{amount:,} VNĐ**\n💰 Số dư: **{new_bal:,} VNĐ**"
         await user.send(embed=embed)
     except:
         pass
 
-# ================== POLLING - MATCHING LINH HOẠT ==================
+# ================== POLLING - MATCHING THÔNG MINH ==================
 @tasks.loop(seconds=5)
 async def poll_sepay():
     pending = {oid: data for oid, data in orders.items() if not data.get("paid")}
@@ -82,16 +82,21 @@ async def poll_sepay():
             content = str(txn.get("transaction_content") or "").strip()
             log.info(f"🔍 Giao dịch: {amount:,}đ | Nội dung: '{content}'")
 
+            # 1. Khớp theo mã đơn
             for oid, order in list(pending.items()):
-                # Matching linh hoạt hơn
-                if (oid.upper() in content.upper() or 
-                    oid[3:].upper() in content.upper() or 
-                    oid.lower() in content.lower()) and amount >= order["amount"]:
-                    
-                    log.info(f"🎯 KHỚP ĐƠN {oid} → Tự động cộng tiền!")
+                if oid.upper() in content.upper() and amount >= order["amount"]:
+                    log.info(f"🎯 KHỚP THEO MÃ ĐƠN {oid}")
                     await confirm_payment(oid)
                     del pending[oid]
                     break
+            else:
+                # 2. Khớp theo số tiền (nếu chỉ có 1 đơn chờ với số tiền đó)
+                matching_orders = [ (oid, o) for oid, o in pending.items() if o["amount"] == amount ]
+                if len(matching_orders) == 1:
+                    oid, order = matching_orders[0]
+                    log.info(f"🎯 KHỚP THEO SỐ TIỀN {amount:,}đ → Đơn {oid}")
+                    await confirm_payment(oid)
+                    del pending[oid]
     except Exception as e:
         log.error(f"Poll lỗi: {e}")
 
@@ -111,8 +116,8 @@ class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
         embed = discord.Embed(title="💳 Thông tin chuyển khoản", color=0xE91E8C)
         embed.description = (
             f"**Số tiền:** {amt:,} VNĐ\n"
-            f"**Nội dung CK:** `{oid}`\n\n"
-            "**⚠️ YÊU CẦU: Ghi đúng & chỉ ghi mã đơn này vào nội dung chuyển khoản**"
+            f"**Mã đơn:** `{oid}`\n\n"
+            "✅ Chuyển đúng số tiền là được (hệ thống sẽ tự động nhận)"
         )
         embed.set_image(url=build_qr_url(amt, oid))
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -130,7 +135,7 @@ class ShopView(discord.ui.View):
 async def on_ready():
     log.info(f"Bot online: {bot.user}")
     poll_sepay.start()
-    log.info("🚀 Auto nạp đang chạy...")
+    log.info("🚀 Auto nạp đang chạy (match theo mã + theo tiền)")
 
 @bot.command()
 async def shop(ctx):
@@ -141,11 +146,5 @@ async def shop(ctx):
 async def doncho(ctx):
     pending = [(k,v) for k,v in orders.items() if not v.get("paid")]
     await ctx.send(f"**Đơn chờ:** {len(pending)}\n" + "\n".join(f"`{k}` → {v['amount']:,}đ" for k,v in pending))
-
-@bot.command()
-@commands.has_permissions(administrator=True)
-async def xacnhan(ctx, order_id: str):
-    await confirm_payment(order_id.upper())
-    await ctx.send(f"✅ Đã xác nhận thủ công đơn {order_id.upper()}")
 
 bot.run(TOKEN)
