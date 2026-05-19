@@ -226,22 +226,40 @@ def _parse_amount(val) -> int:
         return 0
 
 def _txn_all_text(txn: dict) -> str:
-    """Gộp tất cả field text của giao dịch để tìm mã đơn."""
+    """Gộp tất cả field text — hỗ trợ cả SePay webhook lẫn API list."""
     fields = [
-        txn.get("transaction_content") or "",
-        txn.get("description") or "",
-        txn.get("code") or "",
-        txn.get("reference_number") or "",
-        txn.get("sub_account") or "",
+        txn.get("transaction_content") or "",  # API list
+        txn.get("content")             or "",  # Webhook SePay
+        txn.get("description")         or "",  # Webhook SePay
+        txn.get("code")                or "",  # Webhook / mã CK
+        txn.get("reference_number")    or "",  # API list
+        txn.get("referenceCode")       or "",  # Webhook SePay
+        txn.get("sub_account")         or "",  # API list
+        txn.get("subAccount")          or "",  # Webhook SePay
     ]
     return " ".join(str(f) for f in fields).upper()
+
+def _txn_amount(txn: dict) -> int:
+    """Lấy số tiền — hỗ trợ cả SePay webhook (transferAmount) lẫn API list (amount_in)."""
+    return _parse_amount(
+        txn.get("transferAmount") or
+        txn.get("amount_in")      or
+        txn.get("amount")         or 0
+    )
+
+def _txn_date(txn: dict) -> str:
+    """Lấy ngày giờ — hỗ trợ cả 2 format."""
+    return str(
+        txn.get("transactionDate") or
+        txn.get("transaction_date") or ""
+    )
 
 def _match_order(txn: dict, oid: str, order: dict) -> bool:
     """
     Khớp giao dịch với đơn hàng.
     Ưu tiên: mã đơn trong nội dung → nếu không có thì khớp theo amount + thời gian.
     """
-    amount       = _parse_amount(txn.get("amount_in"))
+    amount       = _txn_amount(txn)
     order_amount = order["amount"]
     all_text     = _txn_all_text(txn)
 
@@ -259,7 +277,7 @@ def _match_order(txn: dict, oid: str, order: dict) -> bool:
         return False
 
     order_created = order.get("created_at", 0)
-    txn_date_str  = txn.get("transaction_date", "")
+    txn_date_str  = _txn_date(txn)
     try:
         import datetime
         txn_ts = datetime.datetime.strptime(txn_date_str, "%Y-%m-%d %H:%M:%S").timestamp()
@@ -350,21 +368,13 @@ async def handle_webhook(request: web.Request) -> web.Response:
         log.info(f"📨 Webhook nhận: {json.dumps(body, ensure_ascii=False)[:600]}")
 
         # Chuẩn hoá body thành dạng txn dict giống SePay API
-        txn = {
-            "id":                  body.get("id"),
-            "transaction_content": str(body.get("transaction_content") or body.get("content") or ""),
-            "description":         str(body.get("description") or ""),
-            "code":                str(body.get("code") or ""),
-            "reference_number":    str(body.get("reference_number") or ""),
-            "sub_account":         str(body.get("sub_account") or ""),
-            "amount_in":           body.get("amount_in") or body.get("transferAmount") or body.get("amount") or 0,
-            "transaction_date":    str(body.get("transaction_date") or ""),
-        }
+        # Normalisasi: giữ nguyên tất cả field gốc để _txn_all_text và _txn_amount xử lý
+        txn = dict(body)
         log.info(
             f"📨 Webhook parsed → "
-            f"content='{txn['transaction_content']}' | "
-            f"code='{txn['code']}' | "
-            f"amount={_parse_amount(txn['amount_in'])}"
+            f"content='{body.get('content') or body.get('transaction_content', '')}' | "
+            f"code='{body.get('code', '')}' | "
+            f"amount={_txn_amount(body)}"
         )
 
         for oid, order in list(orders.items()):
