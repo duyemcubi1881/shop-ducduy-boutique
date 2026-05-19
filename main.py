@@ -40,11 +40,40 @@ intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 # ══════════════════════════════════════════
+# PERSISTENT STORAGE (tránh mất data khi restart)
+# ══════════════════════════════════════════
+
+DATA_FILE = "data.json"
+
+def _load_data():
+    global balances, orders
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            d        = json.load(f)
+            balances = {int(k): v for k, v in d.get("balances", {}).items()}
+            orders   = d.get("orders", {})
+            pending  = len([o for o in orders.values() if not o.get("paid")])
+            log.info(f"✅ Loaded {len(orders)} đơn ({pending} chờ), {len(balances)} user từ {DATA_FILE}")
+    except FileNotFoundError:
+        log.info("📂 Chưa có data.json, bắt đầu mới")
+    except Exception as e:
+        log.error(f"Load data lỗi: {e}")
+
+def _save_data():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"balances": balances, "orders": orders}, f, ensure_ascii=False)
+    except Exception as e:
+        log.error(f"Save data lỗi: {e}")
+
+# ══════════════════════════════════════════
 # DATA IN-MEMORY
 # ══════════════════════════════════════════
 
 balances: dict[int, int]  = {}
 orders:   dict[str, dict] = {}
+
+_load_data()
 
 # ══════════════════════════════════════════
 # DANH MUC SAN PHAM
@@ -89,12 +118,14 @@ def get_balance(uid: int) -> int:
 
 def add_balance(uid: int, amount: int) -> int:
     balances[uid] = balances.get(uid, 0) + amount
+    _save_data()
     return balances[uid]
 
 def deduct_balance(uid: int, amount: int) -> bool:
     if balances.get(uid, 0) < amount:
         return False
     balances[uid] -= amount
+    _save_data()
     return True
 
 def make_order_id() -> str:
@@ -165,6 +196,7 @@ async def confirm_payment(order_id: str):
     if not order or order.get("paid"):
         return
     order["paid"] = True
+    _save_data()
     uid    = order["user_id"]
     amount = order["amount"]
     bal    = add_balance(uid, amount)
@@ -395,6 +427,7 @@ class DepositModal(discord.ui.Modal, title="💳  Nạp tiền"):
             "paid":       False,
             "created_at": time.time(),
         }
+        _save_data()
         log.info(f"📝 Tạo đơn: {order_id} - {amount:,} VNĐ - user {interaction.user.id}")
 
         embed = discord.Embed(title="💳  Thông tin chuyển khoản", color=0xE91E8C)
