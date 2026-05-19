@@ -15,14 +15,14 @@ import logging
 
 load_dotenv()
 
-TOKEN        = os.getenv("DISCORD_TOKEN")
-BANK_NUMBER  = os.getenv("BANK_NUMBER")
-BANK_NAME    = os.getenv("BANK_NAME", "msb")      # MSBBank → "msb"
-SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")
-API_BASE     = os.getenv("API_BASE", "https://aovduy.onrender.com")
-
-# Render tự cấp biến PORT — phải dùng biến này, không hardcode
-WEBHOOK_PORT = int(os.getenv("PORT", "8080"))
+TOKEN          = os.getenv("DISCORD_TOKEN")
+BANK_NUMBER    = os.getenv("BANK_NUMBER")
+BANK_NAME      = os.getenv("BANK_NAME", "msb")
+SEPAY_TOKEN    = os.getenv("SEPAY_TOKEN", "")
+API_BASE       = os.getenv("API_BASE", "https://aovduy.onrender.com")
+API_ADMIN_USER = os.getenv("API_ADMIN_USER", "admin")    # admin backend
+API_ADMIN_PASS = os.getenv("API_ADMIN_PASS", "admin123") # password backend
+WEBHOOK_PORT   = int(os.getenv("PORT", "8080"))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -42,8 +42,8 @@ bot = commands.Bot(command_prefix="!", intents=intents)
 # DATA IN-MEMORY
 # ══════════════════════════════════════════
 
-balances: dict[int, int]  = {}   # { user_id : so_du_VND }
-orders:   dict[str, dict] = {}   # { order_id : { user_id, amount, paid } }
+balances: dict[int, int]  = {}
+orders:   dict[str, dict] = {}
 
 # ══════════════════════════════════════════
 # DANH MUC SAN PHAM
@@ -54,27 +54,26 @@ PRODUCTS = {
         "label": "Legit Drag",
         "emoji": "🎯",
         "packages": [
-            {"id": "ld_3h",  "name": "Legit Drag 3 Gio",   "price":   3_000, "duration": "3 gio"},
-            {"id": "ld_1d",  "name": "Legit Drag 1 Ngay",  "price":  10_000, "duration": "1 ngay"},
-            {"id": "ld_7d",  "name": "Legit Drag 7 Ngay",  "price":  50_000, "duration": "7 ngay"},
-            {"id": "ld_1m",  "name": "Legit Drag 1 Thang", "price": 120_000, "duration": "1 thang"},
-            {"id": "ld_1ob", "name": "Legit Drag 1 OB",    "price": 240_000, "duration": "1 OB"},
+            {"id": "ld_3h",  "name": "Legit Drag 3 Gio",   "price":   3_000, "duration": "3 gio",   "days": 1},
+            {"id": "ld_1d",  "name": "Legit Drag 1 Ngay",  "price":  10_000, "duration": "1 ngay",  "days": 1},
+            {"id": "ld_7d",  "name": "Legit Drag 7 Ngay",  "price":  50_000, "duration": "7 ngay",  "days": 7},
+            {"id": "ld_1m",  "name": "Legit Drag 1 Thang", "price": 120_000, "duration": "1 thang", "days": 30},
+            {"id": "ld_1ob", "name": "Legit Drag 1 OB",    "price": 240_000, "duration": "1 OB",    "days": 90},
         ],
     },
     "aimbot_head": {
         "label": "Aimbot Head",
         "emoji": "🔫",
         "packages": [
-            {"id": "ah_3h",  "name": "Aimbot Head 3 Gio",   "price":   5_000, "duration": "3 gio"},
-            {"id": "ah_1d",  "name": "Aimbot Head 1 Ngay",  "price":  15_000, "duration": "1 ngay"},
-            {"id": "ah_7d",  "name": "Aimbot Head 7 Ngay",  "price":  60_000, "duration": "7 ngay"},
-            {"id": "ah_1m",  "name": "Aimbot Head 1 Thang", "price": 240_000, "duration": "1 thang"},
-            {"id": "ah_1ob", "name": "Aimbot Head 1 OB",    "price": 450_000, "duration": "1 OB"},
+            {"id": "ah_3h",  "name": "Aimbot Head 3 Gio",   "price":   5_000, "duration": "3 gio",   "days": 1},
+            {"id": "ah_1d",  "name": "Aimbot Head 1 Ngay",  "price":  15_000, "duration": "1 ngay",  "days": 1},
+            {"id": "ah_7d",  "name": "Aimbot Head 7 Ngay",  "price":  60_000, "duration": "7 ngay",  "days": 7},
+            {"id": "ah_1m",  "name": "Aimbot Head 1 Thang", "price": 240_000, "duration": "1 thang", "days": 30},
+            {"id": "ah_1ob", "name": "Aimbot Head 1 OB",    "price": 450_000, "duration": "1 OB",    "days": 90},
         ],
     },
 }
 
-# Tra cuu nhanh theo package id
 PKG: dict[str, dict] = {}
 for _pk, _pv in PRODUCTS.items():
     for _pkg in _pv["packages"]:
@@ -112,21 +111,62 @@ def build_qr_url(amount: int, order_id: str) -> str:
         f"&accountName=DUCDUY%20BOUTIQUE"
     )
 
+# ══════════════════════════════════════════
+# GỌI BACKEND TẠO KEY
+# Flow: POST /api/login → lấy session cookie
+#       POST /api/createkey → lấy key string
+# ══════════════════════════════════════════
+
 async def fetch_key(package_id: str) -> str | None:
+    """
+    Đăng nhập backend rồi tạo key theo số ngày của gói.
+    Dùng aiohttp.ClientSession để giữ cookie giữa 2 request.
+    """
+    pkg  = PKG.get(package_id)
+    days = pkg["days"] if pkg else 1
+
     try:
         async with aiohttp.ClientSession() as s:
-            async with s.get(
-                f"{API_BASE}/api/key",
-                params={"package": package_id},
+
+            # Bước 1: Đăng nhập lấy session
+            login_resp = await s.post(
+                f"{API_BASE}/api/login",
+                json={"username": API_ADMIN_USER, "password": API_ADMIN_PASS},
                 timeout=aiohttp.ClientTimeout(total=10),
-            ) as r:
-                if r.status == 200:
-                    data = await r.json()
-                    return data.get("key") or data.get("data") or str(data)
-                log.warning(f"API key tra {r.status} cho {package_id}")
+            )
+            if login_resp.status != 200:
+                body = await login_resp.text()
+                log.error(f"Login backend that bai {login_resp.status}: {body[:200]}")
+                return None
+            log.info(f"Login backend OK, tao key {days} ngay cho {package_id}")
+
+            # Bước 2: Tạo key
+            key_resp = await s.post(
+                f"{API_BASE}/api/createkey",
+                json={
+                    "days": days,
+                    "key_type": "single_device",
+                    "created_by": "ShopBot",
+                    "note": f"Auto-{package_id}",
+                },
+                timeout=aiohttp.ClientTimeout(total=10),
+            )
+            data = await key_resp.json()
+            if key_resp.status == 201:
+                key_str = data.get("key")
+                log.info(f"Tao key thanh cong: {key_str}")
+                return key_str
+            else:
+                log.error(f"Tao key that bai {key_resp.status}: {data}")
+                return None
+
     except Exception as e:
         log.error(f"fetch_key loi: {e}")
-    return None
+        return None
+
+# ══════════════════════════════════════════
+# XAC NHAN THANH TOAN
+# ══════════════════════════════════════════
 
 async def confirm_payment(order_id: str):
     order = orders.get(order_id)
@@ -153,6 +193,7 @@ async def confirm_payment(order_id: str):
 
 # ══════════════════════════════════════════
 # POLLING SEPAY (du phong, chay moi 15 giay)
+# Goi thang API SePay de doi chieu giao dich
 # ══════════════════════════════════════════
 
 @tasks.loop(seconds=15)
@@ -170,14 +211,18 @@ async def poll_sepay():
                 timeout=aiohttp.ClientTimeout(total=8),
             ) as r:
                 if r.status != 200:
+                    log.debug(f"SePay poll tra {r.status}")
                     return
                 data = await r.json()
                 txns = data.get("transactions", [])
+                log.debug(f"SePay poll: {len(txns)} giao dich")
+
         for txn in txns:
             content = str(txn.get("transaction_content", "")).upper()
             amount  = int(txn.get("amount_in", 0) or 0)
             for oid in list(pending):
                 if oid.upper() in content and amount >= orders[oid]["amount"]:
+                    log.info(f"Polling khop don {oid}!")
                     await confirm_payment(oid)
                     pending.remove(oid)
                     break
@@ -189,13 +234,18 @@ async def poll_sepay():
 # ══════════════════════════════════════════
 
 async def handle_health(request: web.Request) -> web.Response:
-    # Tra "OK" 200 de Render khong restart service
     return web.Response(text="OK", status=200)
 
 async def handle_webhook(request: web.Request) -> web.Response:
+    """
+    POST /webhook — nhan callback SePay
+    SePay gui JSON voi cac field:
+      transaction_content : noi dung chuyen khoan
+      amount_in           : so tien vao
+    """
     try:
         body = await request.json()
-        log.info(f"Webhook: {json.dumps(body, ensure_ascii=False)[:300]}")
+        log.info(f"Webhook nhan: {json.dumps(body, ensure_ascii=False)[:400]}")
 
         content = str(
             body.get("transaction_content") or
@@ -209,16 +259,21 @@ async def handle_webhook(request: web.Request) -> web.Response:
             body.get("amount") or 0
         )
 
+        log.info(f"Webhook content='{content}' amount={amount}")
+
         for oid, order in list(orders.items()):
             if order.get("paid"):
                 continue
             if oid.upper() in content and amount >= order["amount"]:
+                log.info(f"Webhook khop don {oid}!")
                 await confirm_payment(oid)
                 return web.json_response({"success": True, "order": oid})
 
+        log.info("Webhook khong khop don nao")
         return web.json_response({"success": False, "reason": "no_match"})
 
     except json.JSONDecodeError:
+        log.warning("Webhook body khong phai JSON")
         return web.json_response({"success": False}, status=400)
     except Exception as e:
         log.error(f"Webhook loi: {e}")
@@ -227,7 +282,7 @@ async def handle_webhook(request: web.Request) -> web.Response:
 async def start_webhook_server():
     app = web.Application()
     app.router.add_route("*", "/",        handle_health)
-    app.router.add_post("/webhook", handle_webhook)
+    app.router.add_post("/webhook",       handle_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT).start()
@@ -328,6 +383,7 @@ class BuyModal(discord.ui.Modal):
         await interaction.response.defer(ephemeral=True)
         deduct_balance(uid, total)
 
+        # Tao key tu backend
         keys_ok  = []
         keys_err = 0
         for _ in range(qty):
@@ -337,6 +393,7 @@ class BuyModal(discord.ui.Modal):
             else:
                 keys_err += 1
 
+        # Hoan tien neu co loi
         if keys_err:
             add_balance(uid, pkg["price"] * keys_err)
 
@@ -358,6 +415,7 @@ class BuyModal(discord.ui.Modal):
             )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
+        # DM key cho user
         if keys_ok:
             try:
                 user     = await bot.fetch_user(uid)
@@ -462,18 +520,18 @@ def embed_shop() -> discord.Embed:
     e = discord.Embed(title="🛍️  Shop Key Tự Động — ducduy boutique", color=0xE91E8C)
     e.description = (
         "```\n"
-        "\n"
+        "╔══════════════════════════════╗\n"
         "    🔥  SAN PHAM DANG BAN\n"
-        "\n"
+        "╠══════════════════════════════╣\n"
         "  🎯 Legit Drag  |  🔫 Aimbot Head\n"
         "  💰 Tu 3,000d   |  💰 Tu 5,000d\n"
-        "\n"
+        "╠══════════════════════════════╣\n"
         "  📦 Nhan key qua DM tuc thi\n"
         "  ⚡ VietQR - cong tien tu dong\n"
-        "\n"
+        "╠══════════════════════════════╣\n"
         "    💬  SUPPORT\n"
         "  📩 DM: @CubiShop\n"
-        "\n"
+        "╚══════════════════════════════╝\n"
         "```"
     )
     e.set_footer(text="ducduy boutique  •  Chon chuc nang ben duoi")
@@ -512,7 +570,7 @@ async def shop(ctx: commands.Context):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def xacnhan(ctx: commands.Context, order_id: str):
-    """!xacnhan <ma_don>  -  Xac nhan thanh toan thu cong"""
+    """!xacnhan <ma_don>"""
     oid = order_id.upper()
     if oid not in orders:
         return await ctx.send(f"❌ Không tìm thấy đơn `{oid}`.", delete_after=10)
@@ -525,7 +583,7 @@ async def xacnhan(ctx: commands.Context, order_id: str):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def congcoin(ctx: commands.Context, user: discord.Member, amount: int):
-    """!congcoin @user <so_tien>  -  Cong tien truc tiep"""
+    """!congcoin @user <so_tien>"""
     bal = add_balance(user.id, amount)
     await ctx.send(f"✅ Cộng **{amount:,} VNĐ** cho {user.mention}. Số dư: **{bal:,} VNĐ**")
 
@@ -533,7 +591,7 @@ async def congcoin(ctx: commands.Context, user: discord.Member, amount: int):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def doncho(ctx: commands.Context):
-    """!doncho  -  Xem don chua thanh toan"""
+    """!doncho — xem don chua thanh toan"""
     pending = [(oid, o) for oid, o in orders.items() if not o.get("paid")]
     if not pending:
         return await ctx.send("✅ Không có đơn nào đang chờ.")
@@ -549,28 +607,40 @@ async def doncho(ctx: commands.Context):
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def info(ctx: commands.Context):
-    """!info  -  Trang thai bot"""
+    """!info — trang thai bot"""
     pending = len([o for o in orders.values() if not o.get("paid")])
     await ctx.send(
         f"✅ **{bot.user}**\n"
         f"🌐 Webhook: `https://shopducduyboutique.onrender.com/webhook`\n"
         f"🔌 Port: `{WEBHOOK_PORT}`\n"
-        f"⏳ Đơn chờ: `{pending}` / Tổng: `{len(orders)}`",
+        f"⏳ Đơn chờ: `{pending}` / Tổng: `{len(orders)}`\n"
+        f"🔑 Backend: `{API_BASE}`",
         delete_after=30,
     )
+
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def testkey(ctx: commands.Context, pkg_id: str = "ah_1d"):
+    """!testkey [pkg_id] — test tao key tu backend"""
+    await ctx.send(f"⏳ Đang tạo key `{pkg_id}`...", delete_after=5)
+    key = await fetch_key(pkg_id)
+    if key:
+        await ctx.send(f"✅ Key tạo thành công: `{key}`", delete_after=30)
+    else:
+        await ctx.send(f"❌ Tạo key thất bại — xem log Render", delete_after=15)
 
 # ══════════════════════════════════════════
 # READY
 # ══════════════════════════════════════════
 
-_webhook_started = False  # tranh start webhook nhieu lan khi bot reconnect
+_webhook_started = False
 
 @bot.event
 async def on_ready():
     global _webhook_started
     log.info(f"Bot online: {bot.user}  (ID: {bot.user.id})")
 
-    # Chi khoi dong webhook 1 lan duy nhat
     if not _webhook_started:
         try:
             await start_webhook_server()
@@ -579,7 +649,6 @@ async def on_ready():
         except Exception as e:
             log.error(f"Webhook loi: {e}")
 
-    # Chi start polling neu chua chay
     try:
         if not poll_sepay.is_running():
             poll_sepay.start()
