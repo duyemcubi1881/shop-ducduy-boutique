@@ -564,11 +564,29 @@ async def info(ctx: commands.Context):
 # READY
 # ══════════════════════════════════════════
 
+_webhook_started = False  # tranh start webhook nhieu lan khi bot reconnect
+
 @bot.event
 async def on_ready():
+    global _webhook_started
     log.info(f"Bot online: {bot.user}  (ID: {bot.user.id})")
-    await start_webhook_server()
-    poll_sepay.start()
+
+    # Chi khoi dong webhook 1 lan duy nhat
+    if not _webhook_started:
+        try:
+            await start_webhook_server()
+            _webhook_started = True
+            log.info("Webhook OK")
+        except Exception as e:
+            log.error(f"Webhook loi: {e}")
+
+    # Chi start polling neu chua chay
+    try:
+        if not poll_sepay.is_running():
+            poll_sepay.start()
+            log.info("Polling SePay OK")
+    except Exception as e:
+        log.error(f"Polling loi: {e}")
 
 # ══════════════════════════════════════════
 # RUN
