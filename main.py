@@ -9,617 +9,569 @@ import random
 import json
 import logging
 
-# =========================
+# ══════════════════════════════════════════
 # LOAD ENV
-# =========================
+# ══════════════════════════════════════════
 
 load_dotenv()
 
 TOKEN        = os.getenv("DISCORD_TOKEN")
-BANK_NUMBER  = os.getenv("BANK_NUMBER")       # Số tài khoản ngân hàng
-BANK_NAME    = os.getenv("BANK_NAME", "msb")  # MSBBANK → dùng "msb" trong VietQR
-SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")   # Token webhook từ SePay (tuỳ chọn)
+BANK_NUMBER  = os.getenv("BANK_NUMBER")
+BANK_NAME    = os.getenv("BANK_NAME", "msb")      # MSBBank → "msb"
+SEPAY_TOKEN  = os.getenv("SEPAY_TOKEN", "")
 API_BASE     = os.getenv("API_BASE", "https://aovduy.onrender.com")
-WEBHOOK_PORT = int(os.getenv("WEBHOOK_PORT", "8080"))
 
-logging.basicConfig(level=logging.INFO)
-log = logging.getLogger("bot")
+# Render tự cấp biến PORT — phải dùng biến này, không hardcode
+WEBHOOK_PORT = int(os.getenv("PORT", "8080"))
 
-# =========================
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("shop")
+
+# ══════════════════════════════════════════
 # BOT SETUP
-# =========================
+# ══════════════════════════════════════════
 
 intents = discord.Intents.all()
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# =========================
-# DATA (in-memory)
-# Thực tế nên dùng SQLite/PostgreSQL
-# =========================
+# ══════════════════════════════════════════
+# DATA IN-MEMORY
+# ══════════════════════════════════════════
 
-balances: dict[int, int] = {}   # {user_id: số_dư_VND}
-orders:   dict[str, dict] = {}  # {order_id: {...}}
+balances: dict[int, int]  = {}   # { user_id : so_du_VND }
+orders:   dict[str, dict] = {}   # { order_id : { user_id, amount, paid } }
 
-# =========================
-# DANH MỤC SẢN PHẨM
-# =========================
+# ══════════════════════════════════════════
+# DANH MUC SAN PHAM
+# ══════════════════════════════════════════
 
 PRODUCTS = {
     "legit_drag": {
         "label": "Legit Drag",
         "emoji": "🎯",
         "packages": [
-            {"id": "ld_3h",  "name": "Key Legit Drag 3 Giờ",   "price": 3_000,   "duration": "3 giờ"},
-            {"id": "ld_1d",  "name": "Key Legit Drag 1 Ngày",   "price": 10_000,  "duration": "1 ngày"},
-            {"id": "ld_7d",  "name": "Key Legit Drag 7 Ngày",   "price": 50_000,  "duration": "7 ngày"},
-            {"id": "ld_1m",  "name": "Key Legit Drag 1 Tháng",  "price": 120_000, "duration": "1 tháng"},
-            {"id": "ld_1ob", "name": "Key Legit Drag 1 OB",     "price": 240_000, "duration": "1 OB"},
-        ]
+            {"id": "ld_3h",  "name": "Legit Drag 3 Gio",   "price":   3_000, "duration": "3 gio"},
+            {"id": "ld_1d",  "name": "Legit Drag 1 Ngay",  "price":  10_000, "duration": "1 ngay"},
+            {"id": "ld_7d",  "name": "Legit Drag 7 Ngay",  "price":  50_000, "duration": "7 ngay"},
+            {"id": "ld_1m",  "name": "Legit Drag 1 Thang", "price": 120_000, "duration": "1 thang"},
+            {"id": "ld_1ob", "name": "Legit Drag 1 OB",    "price": 240_000, "duration": "1 OB"},
+        ],
     },
     "aimbot_head": {
         "label": "Aimbot Head",
         "emoji": "🔫",
         "packages": [
-            {"id": "ah_3h",  "name": "Key Aimbot Head 3 Giờ",   "price": 5_000,   "duration": "3 giờ"},
-            {"id": "ah_1d",  "name": "Key Aimbot Head 1 Ngày",   "price": 15_000,  "duration": "1 ngày"},
-            {"id": "ah_7d",  "name": "Key Aimbot Head 7 Ngày",   "price": 60_000,  "duration": "7 ngày"},
-            {"id": "ah_1m",  "name": "Key Aimbot Head 1 Tháng",  "price": 240_000, "duration": "1 tháng"},
-            {"id": "ah_1ob", "name": "Key Aimbot Head 1 OB",     "price": 450_000, "duration": "1 OB"},
-        ]
+            {"id": "ah_3h",  "name": "Aimbot Head 3 Gio",   "price":   5_000, "duration": "3 gio"},
+            {"id": "ah_1d",  "name": "Aimbot Head 1 Ngay",  "price":  15_000, "duration": "1 ngay"},
+            {"id": "ah_7d",  "name": "Aimbot Head 7 Ngay",  "price":  60_000, "duration": "7 ngay"},
+            {"id": "ah_1m",  "name": "Aimbot Head 1 Thang", "price": 240_000, "duration": "1 thang"},
+            {"id": "ah_1ob", "name": "Aimbot Head 1 OB",    "price": 450_000, "duration": "1 OB"},
+        ],
     },
 }
 
-# Tra cứu nhanh package theo id
-PACKAGE_LOOKUP: dict[str, dict] = {}
-for _prod_key, _prod in PRODUCTS.items():
-    for _pkg in _prod["packages"]:
-        PACKAGE_LOOKUP[_pkg["id"]] = {**_pkg, "product_label": _prod["label"]}
+# Tra cuu nhanh theo package id
+PKG: dict[str, dict] = {}
+for _pk, _pv in PRODUCTS.items():
+    for _pkg in _pv["packages"]:
+        PKG[_pkg["id"]] = {**_pkg, "product_label": _pv["label"]}
 
-# =========================
-# HÀM TIỆN ÍCH
-# =========================
+# ══════════════════════════════════════════
+# HAM TIEN ICH
+# ══════════════════════════════════════════
 
-def get_balance(user_id: int) -> int:
-    return balances.get(user_id, 0)
+def get_balance(uid: int) -> int:
+    return balances.get(uid, 0)
 
-def add_balance(user_id: int, amount: int) -> int:
-    balances[user_id] = balances.get(user_id, 0) + amount
-    return balances[user_id]
+def add_balance(uid: int, amount: int) -> int:
+    balances[uid] = balances.get(uid, 0) + amount
+    return balances[uid]
 
-def deduct_balance(user_id: int, amount: int) -> bool:
-    """Trừ tiền, trả về False nếu không đủ số dư."""
-    if balances.get(user_id, 0) < amount:
+def deduct_balance(uid: int, amount: int) -> bool:
+    if balances.get(uid, 0) < amount:
         return False
-    balances[user_id] -= amount
+    balances[uid] -= amount
     return True
 
+def make_order_id() -> str:
+    oid = f"NAP{random.randint(10000, 99999)}"
+    while oid in orders:
+        oid = f"NAP{random.randint(10000, 99999)}"
+    return oid
+
 def build_qr_url(amount: int, order_id: str) -> str:
-    # MSBBank dùng mã "msb" trong VietQR
-    # Kiểm tra danh sách đầy đủ: https://api.vietqr.io/v2/banks
     bank = BANK_NAME.lower().strip()
     return (
-        f"https://img.vietqr.io/image/"
-        f"{bank}-{BANK_NUMBER}-compact2.png"
+        f"https://img.vietqr.io/image/{bank}-{BANK_NUMBER}-compact2.png"
         f"?amount={amount}"
         f"&addInfo={order_id}"
         f"&accountName=DUCDUY%20BOUTIQUE"
     )
 
-async def fetch_key_from_api(package_id: str) -> str | None:
-    """
-    Gọi API backend để lấy key.
-    Endpoint mẫu: GET /api/key?package=<package_id>
-    Trả về key (str) hoặc None nếu thất bại.
-    """
+async def fetch_key(package_id: str) -> str | None:
     try:
-        async with aiohttp.ClientSession() as session:
-            url = f"{API_BASE}/api/key"
-            async with session.get(url, params={"package": package_id}, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                if resp.status == 200:
-                    data = await resp.json()
-                    # Tuỳ cấu trúc API của bạn — điều chỉnh key JSON ở đây
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                f"{API_BASE}/api/key",
+                params={"package": package_id},
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as r:
+                if r.status == 200:
+                    data = await r.json()
                     return data.get("key") or data.get("data") or str(data)
-                log.warning(f"API trả về {resp.status} cho package {package_id}")
+                log.warning(f"API key tra {r.status} cho {package_id}")
     except Exception as e:
-        log.error(f"Lỗi gọi API lấy key: {e}")
+        log.error(f"fetch_key loi: {e}")
     return None
 
 async def confirm_payment(order_id: str):
-    """Xử lý sau khi xác nhận thanh toán thành công."""
     order = orders.get(order_id)
     if not order or order.get("paid"):
         return
-
     order["paid"] = True
-    user_id = order["user_id"]
-    amount  = order["amount"]
-
-    new_bal = add_balance(user_id, amount)
-
-    # Thông báo cho user qua DM
+    uid    = order["user_id"]
+    amount = order["amount"]
+    bal    = add_balance(uid, amount)
+    log.info(f"Xac nhan don {order_id} | +{amount:,}d | user {uid} | du {bal:,}d")
     try:
-        user = await bot.fetch_user(user_id)
-        embed = discord.Embed(title="✅ Nạp tiền thành công", color=0x00FF7F)
+        user = await bot.fetch_user(uid)
+        embed = discord.Embed(title="✅  Nạp tiền thành công!", color=0x2ECC71)
         embed.description = (
             f"💵 Số tiền nạp: **{amount:,} VNĐ**\n"
-            f"💰 Số dư hiện tại: **{new_bal:,} VNĐ**\n"
-            f"🧾 Mã đơn: `{order_id}`"
+            f"💰 Số dư hiện tại: **{bal:,} VNĐ**\n"
+            f"🧾 Mã đơn: `{order_id}`\n\n"
+            f"👉 Vào shop để mua key ngay!"
         )
+        embed.set_footer(text="ducduy boutique")
         await user.send(embed=embed)
-        log.info(f"Đã cộng {amount} VNĐ cho user {user_id}, đơn {order_id}")
     except Exception as e:
-        log.error(f"Không thể DM user {user_id}: {e}")
+        log.warning(f"Khong DM duoc user {uid}: {e}")
 
-# =========================
-# POLLING TỰ ĐỘNG (dự phòng khi không có webhook)
-# Mỗi 10 giây kiểm tra API SePay / Casso để xem
-# có giao dịch mới khớp với mã đơn nào không.
-# =========================
+# ══════════════════════════════════════════
+# POLLING SEPAY (du phong, chay moi 15 giay)
+# ══════════════════════════════════════════
 
-@tasks.loop(seconds=10)
-async def poll_transactions():
-    """
-    Polling dự phòng — chạy song song với webhook.
-    Gọi API SePay hoặc Casso để lấy giao dịch gần nhất
-    rồi đối chiếu với orders đang chờ.
-    """
+@tasks.loop(seconds=15)
+async def poll_sepay():
     pending = [oid for oid, o in orders.items() if not o.get("paid")]
-    if not pending:
+    if not pending or not SEPAY_TOKEN:
         return
-
     try:
-        # ---- SePay example ----
-        # Thay URL + header theo tài liệu SePay của bạn
-        headers = {}
-        if SEPAY_TOKEN:
-            headers["Authorization"] = f"Bearer {SEPAY_TOKEN}"
-
-        async with aiohttp.ClientSession() as session:
-            url = f"{API_BASE}/api/transactions/latest"   # hoặc endpoint SePay thật
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=8)) as resp:
-                if resp.status != 200:
+        headers = {"Authorization": f"Bearer {SEPAY_TOKEN}"}
+        async with aiohttp.ClientSession() as s:
+            async with s.get(
+                "https://my.sepay.vn/userapi/transactions/list",
+                headers=headers,
+                params={"limit": 20},
+                timeout=aiohttp.ClientTimeout(total=8),
+            ) as r:
+                if r.status != 200:
                     return
-                data = await resp.json()
-                txns = data if isinstance(data, list) else data.get("transactions", [])
-
+                data = await r.json()
+                txns = data.get("transactions", [])
         for txn in txns:
-            content = str(txn.get("content", "") or txn.get("description", "")).upper()
-            for oid in pending:
-                if oid.upper() in content:
+            content = str(txn.get("transaction_content", "")).upper()
+            amount  = int(txn.get("amount_in", 0) or 0)
+            for oid in list(pending):
+                if oid.upper() in content and amount >= orders[oid]["amount"]:
                     await confirm_payment(oid)
+                    pending.remove(oid)
                     break
     except Exception as e:
-        log.debug(f"poll_transactions lỗi (bình thường nếu chưa có API): {e}")
+        log.debug(f"poll_sepay: {e}")
 
-# =========================
-# WEBHOOK SERVER (nhận callback từ SePay / Casso)
-# =========================
+# ══════════════════════════════════════════
+# WEBHOOK SERVER
+# ══════════════════════════════════════════
+
+async def handle_health(request: web.Request) -> web.Response:
+    # Tra "OK" 200 de Render khong restart service
+    return web.Response(text="OK", status=200)
 
 async def handle_webhook(request: web.Request) -> web.Response:
-    """
-    Nhận POST webhook từ SePay / Casso khi có giao dịch mới.
-    Body JSON mẫu SePay:
-    {
-      "id": 12345,
-      "content": "NAP12345 chuyen tien",
-      "transferAmount": 50000,
-      ...
-    }
-    """
     try:
         body = await request.json()
-        log.info(f"Webhook nhận: {json.dumps(body, ensure_ascii=False)[:200]}")
+        log.info(f"Webhook: {json.dumps(body, ensure_ascii=False)[:300]}")
 
-        content  = str(body.get("content", "") or body.get("description", "")).upper()
-        amount   = int(body.get("transferAmount", 0) or body.get("amount", 0))
+        content = str(
+            body.get("transaction_content") or
+            body.get("content") or
+            body.get("description") or ""
+        ).upper()
 
-        for oid, order in orders.items():
+        amount = int(
+            body.get("amount_in") or
+            body.get("transferAmount") or
+            body.get("amount") or 0
+        )
+
+        for oid, order in list(orders.items()):
             if order.get("paid"):
                 continue
             if oid.upper() in content and amount >= order["amount"]:
                 await confirm_payment(oid)
-                return web.json_response({"status": "ok", "order": oid})
+                return web.json_response({"success": True, "order": oid})
 
-        return web.json_response({"status": "no_match"})
+        return web.json_response({"success": False, "reason": "no_match"})
+
+    except json.JSONDecodeError:
+        return web.json_response({"success": False}, status=400)
     except Exception as e:
-        log.error(f"Webhook error: {e}")
-        return web.json_response({"status": "error"}, status=400)
+        log.error(f"Webhook loi: {e}")
+        return web.json_response({"success": False}, status=500)
 
 async def start_webhook_server():
     app = web.Application()
+    app.router.add_get("/",         handle_health)
+    app.router.add_head("/",        handle_health)
     app.router.add_post("/webhook", handle_webhook)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT)
-    await site.start()
-    log.info(f"Webhook server đang chạy tại cổng {WEBHOOK_PORT}")
+    await web.TCPSite(runner, "0.0.0.0", WEBHOOK_PORT).start()
+    log.info(f"Webhook server cong {WEBHOOK_PORT}")
+    log.info(f"SePay URL: https://shopducduyboutique.onrender.com/webhook")
 
-# =========================
-# MODAL NẠP TIỀN
-# =========================
+# ══════════════════════════════════════════
+# MODAL NAP TIEN
+# ══════════════════════════════════════════
 
-class DepositModal(discord.ui.Modal, title="💳 Nạp tiền"):
+class DepositModal(discord.ui.Modal, title="💳  Nạp tiền"):
     amount = discord.ui.TextInput(
-        label="Nhập số tiền cần nạp (VNĐ)",
+        label="Số tiền muốn nạp (VNĐ)",
         placeholder="Ví dụ: 50000",
         min_length=4,
         max_length=10,
     )
 
     async def on_submit(self, interaction: discord.Interaction):
+        raw = self.amount.value.replace(",", "").replace(".", "").strip()
         try:
-            amount = int(self.amount.value.replace(",", "").replace(".", "").strip())
+            amount = int(raw)
         except ValueError:
-            return await interaction.response.send_message("❌ Số tiền không hợp lệ.", ephemeral=True)
-
+            return await interaction.response.send_message(
+                "❌ Số tiền không hợp lệ.", ephemeral=True
+            )
         if amount < 1_000:
-            return await interaction.response.send_message("❌ Số tiền tối thiểu là **1.000 VNĐ**.", ephemeral=True)
+            return await interaction.response.send_message(
+                "❌ Số tiền tối thiểu là **1.000 VNĐ**.", ephemeral=True
+            )
 
-        order_id = f"NAP{random.randint(10000, 99999)}"
-        # Đảm bảo không trùng
-        while order_id in orders:
-            order_id = f"NAP{random.randint(10000, 99999)}"
-
+        order_id = make_order_id()
         orders[order_id] = {
             "user_id": interaction.user.id,
-            "amount": amount,
-            "paid": False,
+            "amount":  amount,
+            "paid":    False,
         }
 
-        qr_url = build_qr_url(amount, order_id)
-
-        embed = discord.Embed(
-            title="💳  Thông tin chuyển khoản",
-            color=0xE91E8C,
-        )
+        embed = discord.Embed(title="💳  Thông tin chuyển khoản", color=0xE91E8C)
         embed.description = (
             "```\n"
-            "═══════════════════════════════\n"
-            f"  💰  Số tiền : {amount:,} VNĐ\n"
-            f"  🏦  Ngân hàng : MSB Bank\n"
-            f"  🔢  Số TK : {BANK_NUMBER}\n"
-            "═══════════════════════════════\n"
+            "╔══════════════════════════════╗\n"
+            f"  💰  Số tiền  :  {amount:,} VNĐ\n"
+            f"  🏦  Ngân hàng:  MSB Bank\n"
+            f"  🔢  Số TK    :  {BANK_NUMBER}\n"
+            "╚══════════════════════════════╝\n"
             "```"
-            f"📝 Nội dung chuyển khoản:\n> **`{order_id}`**  ← *Bắt buộc, không được sửa*\n\n"
-            "📱 Quét mã QR bên dưới\n"
-            "✅ Bot tự động cộng tiền sau khi nhận giao dịch"
+            f"📝 **Nội dung chuyển khoản:**\n"
+            f"```\n{order_id}\n```"
+            f"⚠️ Nhập **đúng** nội dung trên, không thêm bớt\n\n"
+            f"📱 Quét mã QR bên dưới\n"
+            f"✅ Bot tự động cộng tiền sau khi nhận giao dịch"
         )
-        embed.set_image(url=qr_url)
-        embed.set_footer(text=f"⏳ Mã đơn hết hạn sau 15 phút  •  {order_id}")
+        embed.set_image(url=build_qr_url(amount, order_id))
+        embed.set_footer(text=f"Mã đơn: {order_id}  •  Hết hạn sau 15 phút")
 
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-# =========================
-# MODAL NHẬP SỐ LƯỢNG KEY
-# =========================
+# ══════════════════════════════════════════
+# MODAL MUA KEY
+# ══════════════════════════════════════════
 
-class BuyQuantityModal(discord.ui.Modal):
-    quantity_input = discord.ui.TextInput(
+class BuyModal(discord.ui.Modal):
+    qty_input = discord.ui.TextInput(
         label="Số lượng key muốn mua",
-        placeholder="Nhập số nguyên, ví dụ: 1",
-        max_length=3,
+        placeholder="Ví dụ: 1",
+        max_length=2,
         default="1",
     )
 
-    def __init__(self, package_id: str):
-        self.package_id = package_id
-        pkg = PACKAGE_LOOKUP[package_id]
-        super().__init__(title=f"🛒 Mua {pkg['name']}")
+    def __init__(self, pkg_id: str):
+        pkg = PKG[pkg_id]
+        super().__init__(title=f"🛒  {pkg['name']}")
+        self.pkg_id = pkg_id
 
     async def on_submit(self, interaction: discord.Interaction):
         try:
-            qty = int(self.quantity_input.value.strip())
-            if qty < 1:
-                raise ValueError
+            qty = max(1, int(self.qty_input.value.strip()))
         except ValueError:
-            return await interaction.response.send_message("❌ Số lượng không hợp lệ.", ephemeral=True)
-
-        pkg     = PACKAGE_LOOKUP[self.package_id]
-        total   = pkg["price"] * qty
-        user_id = interaction.user.id
-        balance = get_balance(user_id)
-
-        if balance < total:
-            shortage = total - balance
             return await interaction.response.send_message(
-                f"❌ Số dư không đủ!\n"
-                f"💰 Số dư: **{balance:,} VNĐ**\n"
-                f"💸 Cần thêm: **{shortage:,} VNĐ**",
+                "❌ Số lượng không hợp lệ.", ephemeral=True
+            )
+
+        pkg   = PKG[self.pkg_id]
+        total = pkg["price"] * qty
+        uid   = interaction.user.id
+        bal   = get_balance(uid)
+
+        if bal < total:
+            return await interaction.response.send_message(
+                f"❌ **Số dư không đủ!**\n"
+                f"💰 Số dư: **{bal:,} VNĐ**\n"
+                f"💸 Cần: **{total:,} VNĐ**\n"
+                f"🔻 Thiếu: **{total - bal:,} VNĐ**",
                 ephemeral=True,
             )
 
         await interaction.response.defer(ephemeral=True)
+        deduct_balance(uid, total)
 
-        # Trừ tiền trước
-        deduct_balance(user_id, total)
-
-        # Lấy từng key từ API
-        keys_received = []
-        failed = 0
+        keys_ok  = []
+        keys_err = 0
         for _ in range(qty):
-            key = await fetch_key_from_api(self.package_id)
-            if key:
-                keys_received.append(key)
+            k = await fetch_key(self.pkg_id)
+            if k:
+                keys_ok.append(k)
             else:
-                failed += 1
+                keys_err += 1
 
-        # Hoàn tiền nếu có lỗi
-        if failed:
-            refund = pkg["price"] * failed
-            add_balance(user_id, refund)
+        if keys_err:
+            add_balance(uid, pkg["price"] * keys_err)
 
-        new_bal = get_balance(user_id)
+        new_bal = get_balance(uid)
 
-        # Embed kết quả (gửi follow-up cho user)
-        embed = discord.Embed(
-            title=f"✅ Mua key thành công",
-            color=0x00FF7F,
-        )
+        embed = discord.Embed(title="✅  Mua key thành công!", color=0x2ECC71)
         embed.description = (
-            f"🛒 Đã mua: **{len(keys_received)}x {pkg['name']}**\n"
-            f"⏱ Thời gian sử dụng: **{pkg['duration']}**\n"
-            f"💸 Đã trừ: **{pkg['price'] * len(keys_received):,} VNĐ**\n"
-            f"💰 Số dư còn lại: **{new_bal:,} VNĐ**"
+            f"🛒 **{pkg['name']}**\n"
+            f"⏱️ Thời hạn: **{pkg['duration']}**\n"
+            f"🔢 Số lượng: **{len(keys_ok)} key**\n"
+            f"💸 Đã trừ: **{pkg['price'] * len(keys_ok):,} VNĐ**\n"
+            f"💰 Số dư còn: **{new_bal:,} VNĐ**"
         )
-        if failed:
-            embed.add_field(name="⚠️ Lưu ý", value=f"{failed} key lấy thất bại — đã hoàn tiền.", inline=False)
-
+        if keys_err:
+            embed.add_field(
+                name="⚠️ Lưu ý",
+                value=f"{keys_err} key lỗi → đã hoàn **{pkg['price']*keys_err:,} VNĐ**",
+                inline=False,
+            )
         await interaction.followup.send(embed=embed, ephemeral=True)
 
-        # DM key cho user
-        if keys_received:
+        if keys_ok:
             try:
-                user = await bot.fetch_user(user_id)
-                dm_embed = discord.Embed(
-                    title="🔑  Key của bạn đây!",
-                    color=0xE91E8C,
-                )
-                key_list = "\n".join(f"`{k}`" for k in keys_received)
-                dm_embed.description = (
+                user     = await bot.fetch_user(uid)
+                key_text = "\n".join(f"`{k}`" for k in keys_ok)
+                dm = discord.Embed(title="🔑  Key của bạn!", color=0xE91E8C)
+                dm.description = (
                     "```\n"
-                    "═══════════════════════════════\n"
-                    f"  ✅  Mua thành công\n"
-                    "═══════════════════════════════\n"
+                    "╔══════════════════════════════╗\n"
+                    "       ✅  Mua thành công\n"
+                    "╚══════════════════════════════╝\n"
                     "```"
-                    f"🛒 Sản phẩm: **{pkg['name']}**\n"
+                    f"🛒 **{pkg['name']}**\n"
                     f"⏱️ Thời hạn: **{pkg['duration']}**\n\n"
-                    f"🔑 **Key:**\n{key_list}\n\n"
-                    "```\n"
-                    "───────────────────────────────\n"
-                    "```"
-                    "📁 File & hướng dẫn sử dụng trong server\n"
-                    "🙏 Cảm ơn bạn đã sử dụng **ducduy boutique**"
+                    f"🔑 **Key:**\n{key_text}\n\n"
+                    "📁 File & hướng dẫn trong server\n"
+                    "🙏 Cảm ơn bạn đã dùng **ducduy boutique**"
                 )
-                dm_embed.set_footer(text="⚠️ Không chia sẻ key với người khác!")
-                await user.send(embed=dm_embed)
+                dm.set_footer(text="⚠️ Không chia sẻ key với người khác!")
+                await user.send(embed=dm)
             except discord.Forbidden:
                 await interaction.followup.send(
-                    "⚠️ Không thể DM cho bạn. Vui lòng mở DM để nhận key.",
-                    ephemeral=True,
+                    "⚠️ Không gửi DM được. Hãy mở DM để nhận key!", ephemeral=True
                 )
             except Exception as e:
-                log.error(f"Lỗi gửi DM key: {e}")
+                log.error(f"DM key loi: {e}")
 
-# =========================
-# VIEW: CHỌN GÓI THEO SẢN PHẨM
-# =========================
-
-class PackageSelectView(discord.ui.View):
-    """Hiện các gói của một sản phẩm cụ thể."""
-
-    def __init__(self, product_key: str):
-        super().__init__(timeout=120)
-        prod = PRODUCTS[product_key]
-        for pkg in prod["packages"]:
-            self.add_item(PackageButton(pkg))
-
-    @discord.ui.button(label="◀ Quay lại", style=discord.ButtonStyle.secondary, row=4)
-    async def back_button(self, interaction: discord.Interaction, _button):
-        await interaction.response.edit_message(
-            embed=build_category_embed(),
-            view=ShopView(),
-        )
-
+# ══════════════════════════════════════════
+# VIEWS
+# ══════════════════════════════════════════
 
 class PackageButton(discord.ui.Button):
     def __init__(self, pkg: dict):
         super().__init__(
-            label=f"{pkg['name']} — {pkg['price']:,}đ",
+            label=f"{pkg['name']}  —  {pkg['price']:,}đ",
             style=discord.ButtonStyle.primary,
             custom_id=f"pkg_{pkg['id']}",
         )
         self.pkg_id = pkg["id"]
 
     async def callback(self, interaction: discord.Interaction):
-        await interaction.response.send_modal(BuyQuantityModal(self.pkg_id))
+        await interaction.response.send_modal(BuyModal(self.pkg_id))
 
-# =========================
-# VIEW: CHỌN DANH MỤC SẢN PHẨM
-# =========================
 
-class CategorySelectView(discord.ui.View):
-    """Hiện Select Menu để chọn sản phẩm (Legit Drag / Aimbot Head)."""
+class PackageView(discord.ui.View):
+    def __init__(self, product_key: str):
+        super().__init__(timeout=120)
+        for pkg in PRODUCTS[product_key]["packages"]:
+            self.add_item(PackageButton(pkg))
 
+    @discord.ui.button(label="◀  Quay lại", style=discord.ButtonStyle.secondary, row=4)
+    async def back(self, interaction: discord.Interaction, _btn):
+        await interaction.response.edit_message(
+            embed=embed_category(), view=CategoryView()
+        )
+
+
+class CategoryView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=120)
 
     @discord.ui.select(
-        placeholder="🎮 Chọn sản phẩm...",
+        placeholder="🎮  Chọn sản phẩm...",
         options=[
-            discord.SelectOption(
-                label="Legit Drag",
-                value="legit_drag",
-                emoji="🎯",
-                description="Key Legit Drag — từ 3.000đ",
-            ),
-            discord.SelectOption(
-                label="Aimbot Head",
-                value="aimbot_head",
-                emoji="🔫",
-                description="Key Aimbot Head — từ 5.000đ",
-            ),
+            discord.SelectOption(label="Legit Drag",  value="legit_drag",  emoji="🎯", description="Tu 3.000d"),
+            discord.SelectOption(label="Aimbot Head", value="aimbot_head", emoji="🔫", description="Tu 5.000d"),
         ],
     )
     async def select_product(self, interaction: discord.Interaction, select: discord.ui.Select):
-        product_key = select.values[0]
-        prod = PRODUCTS[product_key]
-        embed = build_package_embed(product_key)
-        await interaction.response.edit_message(embed=embed, view=PackageSelectView(product_key))
+        pk = select.values[0]
+        await interaction.response.edit_message(embed=embed_packages(pk), view=PackageView(pk))
 
-    @discord.ui.button(label="◀ Quay lại", style=discord.ButtonStyle.secondary)
-    async def back_button(self, interaction: discord.Interaction, _button):
-        await interaction.response.edit_message(
-            embed=build_shop_embed(),
-            view=ShopView(),
-        )
+    @discord.ui.button(label="◀  Quay lại", style=discord.ButtonStyle.secondary)
+    async def back(self, interaction: discord.Interaction, _btn):
+        await interaction.response.edit_message(embed=embed_shop(), view=ShopView())
 
-# =========================
-# VIEW CHÍNH: SHOP
-# =========================
 
 class ShopView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
 
-    @discord.ui.button(label="💳 Nạp tiền", style=discord.ButtonStyle.green, row=0)
-    async def deposit_button(self, interaction: discord.Interaction, _button):
+    @discord.ui.button(label="💳  Nạp tiền", style=discord.ButtonStyle.green,   row=0)
+    async def btn_deposit(self, interaction: discord.Interaction, _btn):
         await interaction.response.send_modal(DepositModal())
 
-    @discord.ui.button(label="💰 Số dư", style=discord.ButtonStyle.blurple, row=0)
-    async def balance_button(self, interaction: discord.Interaction, _button):
+    @discord.ui.button(label="💰  Số dư",    style=discord.ButtonStyle.blurple, row=0)
+    async def btn_balance(self, interaction: discord.Interaction, _btn):
         bal = get_balance(interaction.user.id)
-        embed = discord.Embed(
-            title="💰 Số dư của bạn",
-            description=f"**{bal:,} VNĐ**",
-            color=0x5865F2,
+        e = discord.Embed(title="💰  Số dư của bạn", description=f"**{bal:,} VNĐ**", color=0x5865F2)
+        await interaction.response.send_message(embed=e, ephemeral=True)
+
+    @discord.ui.button(label="🛒  Mua Key",  style=discord.ButtonStyle.red,     row=0)
+    async def btn_shop(self, interaction: discord.Interaction, _btn):
+        await interaction.response.send_message(
+            embed=embed_category(), view=CategoryView(), ephemeral=True
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @discord.ui.button(label="🛒 Mua Key", style=discord.ButtonStyle.red, row=0)
-    async def shop_button(self, interaction: discord.Interaction, _button):
-        embed = build_category_embed()
-        await interaction.response.send_message(embed=embed, view=CategorySelectView(), ephemeral=True)
+# ══════════════════════════════════════════
+# EMBED BUILDERS
+# ══════════════════════════════════════════
 
-# =========================
-# HÀM TẠO EMBED
-# =========================
-
-def build_shop_embed() -> discord.Embed:
-    embed = discord.Embed(
-        title="🛍️  Shop Key Tự Động — ducduy boutique",
-        color=0xE91E8C,
+def embed_shop() -> discord.Embed:
+    e = discord.Embed(title="🛍️  Shop Key Tự Động — ducduy boutique", color=0xE91E8C)
+    e.description = (
+        "```\n"
+        "╔══════════════════════════════╗\n"
+        "    🔥  SAN PHAM DANG BAN\n"
+        "╠══════════════════════════════╣\n"
+        "  🎯 Legit Drag  |  🔫 Aimbot Head\n"
+        "  💰 Tu 3,000d   |  💰 Tu 5,000d\n"
+        "╠══════════════════════════════╣\n"
+        "  📦 Nhan key qua DM tuc thi\n"
+        "  ⚡ VietQR - cong tien tu dong\n"
+        "╠══════════════════════════════╣\n"
+        "    💬  SUPPORT\n"
+        "  📩 DM: @CubiShop\n"
+        "╚══════════════════════════════╝\n"
+        "```"
     )
-    embed.description = (
-        "```\n"
-        "═══════════════════════════════\n"
-        "🔥  SẢN PHẨM ĐANG BÁN\n"
-        "═══════════════════════════════\n"
-        "```"
-        "🎯 **Legit Drag**　　　　🔫 **Aimbot Head**\n"
-        "💰 Từ **3,000 VNĐ**　　💰 Từ **5,000 VNĐ**\n"
-        "```\n"
-        "───────────────────────────────\n"
-        "```"
-        "📦 Nhận key qua DM ngay lập tức\n"
-        "⚡ Thanh toán VietQR tự động\n"
-        "```\n"
-        "═══════════════════════════════\n"
-        " 💬  SUPPORT\n"
-        "═══════════════════════════════\n"
-        "```"
-        "📩 DM trực tiếp: **@CubiShop**"
-    )
-    embed.set_footer(text="ducduy boutique  •  Chọn chức năng bên dưới ↓")
-    return embed
+    e.set_footer(text="ducduy boutique  •  Chon chuc nang ben duoi")
+    return e
 
-def build_category_embed() -> discord.Embed:
+def embed_category() -> discord.Embed:
+    e = discord.Embed(title="🛒  Danh mục sản phẩm", color=0xFFD700)
     lines = []
-    for pk, prod in PRODUCTS.items():
-        lines.append(f"{prod['emoji']} **{prod['label']}**")
-        for pkg in prod["packages"]:
-            lines.append(f"  └ {pkg['name']} — **{pkg['price']:,}đ**")
-    embed = discord.Embed(title="🛒 Danh mục sản phẩm", color=0xFFD700)
-    embed.description = "\n".join(lines) + "\n\n*Chọn sản phẩm bên dưới ↓*"
-    return embed
+    for pv in PRODUCTS.values():
+        lines.append(f"{pv['emoji']} **{pv['label']}**")
+        for pkg in pv["packages"]:
+            lines.append(f"　└ {pkg['name']} — **{pkg['price']:,}đ**")
+    e.description = "\n".join(lines) + "\n\n*Chọn sản phẩm trong menu bên dưới ↓*"
+    return e
 
-def build_package_embed(product_key: str) -> discord.Embed:
-    prod = PRODUCTS[product_key]
-    embed = discord.Embed(
-        title=f"{prod['emoji']} {prod['label']} — Chọn gói",
-        color=0x00BFFF,
-    )
-    lines = []
-    for pkg in prod["packages"]:
-        lines.append(f"• **{pkg['name']}** — {pkg['price']:,}đ")
-    embed.description = "\n".join(lines) + "\n\n*Ấn nút bên dưới để mua ↓*"
-    return embed
+def embed_packages(product_key: str) -> discord.Embed:
+    pv = PRODUCTS[product_key]
+    e  = discord.Embed(title=f"{pv['emoji']}  {pv['label']} — Chọn gói", color=0x00BFFF)
+    lines = [f"• **{pkg['name']}** — {pkg['price']:,}đ" for pkg in pv["packages"]]
+    e.description = "\n".join(lines) + "\n\n*Ấn nút bên dưới để mua ↓*"
+    return e
 
-# =========================
-# COMMAND !shop
-# =========================
+# ══════════════════════════════════════════
+# LENH BOT
+# ══════════════════════════════════════════
 
 @bot.command()
 async def shop(ctx: commands.Context):
-    # Xoá tin nhắn lệnh !shop của user để giao diện sạch
     try:
         await ctx.message.delete()
     except Exception:
         pass
-    embed = build_shop_embed()
-    await ctx.send(embed=embed, view=ShopView())
+    await ctx.send(embed=embed_shop(), view=ShopView())
 
-# =========================
-# COMMAND ADMIN: CỘNG TIỀN THỦ CÔNG
-# (dùng khi webhook chưa setup)
-# =========================
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def xacnhan(ctx: commands.Context, order_id: str):
-    """!xacnhan <order_id> — Admin xác nhận thanh toán thủ công."""
-    order = orders.get(order_id.upper())
-    if not order:
-        return await ctx.send(f"❌ Không tìm thấy đơn `{order_id}`.", delete_after=10)
-    if order.get("paid"):
-        return await ctx.send(f"❌ Đơn `{order_id}` đã thanh toán rồi.", delete_after=10)
-    await confirm_payment(order_id.upper())
-    await ctx.send(f"✅ Đã xác nhận đơn `{order_id.upper()}`.", delete_after=10)
+    """!xacnhan <ma_don>  -  Xac nhan thanh toan thu cong"""
+    oid = order_id.upper()
+    if oid not in orders:
+        return await ctx.send(f"❌ Không tìm thấy đơn `{oid}`.", delete_after=10)
+    if orders[oid].get("paid"):
+        return await ctx.send(f"❌ Đơn `{oid}` đã thanh toán rồi.", delete_after=10)
+    await confirm_payment(oid)
+    await ctx.send(f"✅ Đã xác nhận đơn `{oid}`.", delete_after=10)
+
 
 @bot.command()
 @commands.has_permissions(administrator=True)
-async def capnhapkey(ctx: commands.Context, user: discord.Member, amount: int):
-    """!capnhapkey @user <số_tiền> — Admin cộng tiền trực tiếp."""
-    new_bal = add_balance(user.id, amount)
-    await ctx.send(f"✅ Đã cộng **{amount:,} VNĐ** cho {user.mention}. Số dư: **{new_bal:,} VNĐ**")
+async def congcoin(ctx: commands.Context, user: discord.Member, amount: int):
+    """!congcoin @user <so_tien>  -  Cong tien truc tiep"""
+    bal = add_balance(user.id, amount)
+    await ctx.send(f"✅ Cộng **{amount:,} VNĐ** cho {user.mention}. Số dư: **{bal:,} VNĐ**")
 
-# =========================
-# COMMAND: XEM ĐƠN ĐANG CHỜ (admin)
-# =========================
 
 @bot.command()
 @commands.has_permissions(administrator=True)
 async def doncho(ctx: commands.Context):
-    """!doncho — Liệt kê tất cả đơn chưa thanh toán."""
+    """!doncho  -  Xem don chua thanh toan"""
     pending = [(oid, o) for oid, o in orders.items() if not o.get("paid")]
     if not pending:
         return await ctx.send("✅ Không có đơn nào đang chờ.")
-    lines = [f"`{oid}` — {o['amount']:,}đ — <@{o['user_id']}>" for oid, o in pending]
-    embed = discord.Embed(title=f"⏳ Đơn chờ thanh toán ({len(pending)})", color=0xFFAA00)
-    embed.description = "\n".join(lines[:20])
-    await ctx.send(embed=embed)
+    lines = [f"`{oid}` — {o['amount']:,}đ — <@{o['user_id']}>" for oid, o in pending[:20]]
+    e = discord.Embed(
+        title=f"⏳ Đơn chờ ({len(pending)})",
+        description="\n".join(lines),
+        color=0xFFAA00,
+    )
+    await ctx.send(embed=e)
 
-# =========================
-# READY EVENT
-# =========================
+
+@bot.command()
+@commands.has_permissions(administrator=True)
+async def info(ctx: commands.Context):
+    """!info  -  Trang thai bot"""
+    pending = len([o for o in orders.values() if not o.get("paid")])
+    await ctx.send(
+        f"✅ **{bot.user}**\n"
+        f"🌐 Webhook: `https://shopducduyboutique.onrender.com/webhook`\n"
+        f"🔌 Port: `{WEBHOOK_PORT}`\n"
+        f"⏳ Đơn chờ: `{pending}` / Tổng: `{len(orders)}`",
+        delete_after=30,
+    )
+
+# ══════════════════════════════════════════
+# READY
+# ══════════════════════════════════════════
 
 @bot.event
 async def on_ready():
-    log.info(f"✅ Bot online: {bot.user} (ID: {bot.user.id})")
-    poll_transactions.start()
+    log.info(f"Bot online: {bot.user}  (ID: {bot.user.id})")
     await start_webhook_server()
+    poll_sepay.start()
 
-# =========================
+# ══════════════════════════════════════════
 # RUN
-# =========================
+# ══════════════════════════════════════════
 
 bot.run(TOKEN)
