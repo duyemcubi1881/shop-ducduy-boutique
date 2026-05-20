@@ -1,0 +1,8 @@
+env
+.env
+data.json
+keys/*.txt
+!keys/HUONG_DAN.txt
+__pycache__/
+*.pyc
+.venv/
